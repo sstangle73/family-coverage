@@ -1,0 +1,1 @@
+First release: household setup by QR code, per-SIM signal logging, data checks, speed tests, test texts, places, export, and the report page.

@@ -1,0 +1,32 @@
+Coverage maps show where a carrier says it works. Family Coverage shows where it does work for your household: at home, at school, at work, at the grandparents', and on the roads in between.
+
+For a few weeks, each phone in the household records its signal and runs small tests, for every SIM it has. A phone with a second carrier's prepaid eSIM measures both networks side by side, at the same moments and places. Then you compare the networks place by place in the report page, which reads every phone's export in your browser.
+
+<b>What it records</b>
+<ul>
+<li>For each SIM: the network, 4G or 5G, the cell, signal strength and quality, and service, every 10 seconds while moving and about every 2 minutes while still</li>
+<li>A GPS track while moving</li>
+<li>Mobile data use per SIM (totals, never which apps)</li>
+<li>Off Wi-Fi: a tiny check that data works, and a small speed test over cellular</li>
+<li>Call and text tests you tap when someone tests your number</li>
+<li>Optional test texts between two household phones at your places, from every SIM, both ways</li>
+</ul>
+
+<b>Made for households</b>
+<ul>
+<li>One phone starts the household; the others join by scanning its QR code</li>
+<li>Each person agrees on their own phone before it records anything</li>
+<li>Every household has an end date, after which the app stops on its own</li>
+<li>Places are saved by standing at them: no addresses to type</li>
+</ul>
+
+<b>Private by design</b>
+<ul>
+<li>The data stays on your phones until you export it</li>
+<li>No account, no ads, no analytics: nothing is sent to the app's maker</li>
+<li>An optional server, which your household runs, can collect the data instead</li>
+</ul>
+
+Nothing measures during a call, and the phone sleeps between readings when it sits still.
+
+Free and open source under the Apache License 2.0, by StorieDev.

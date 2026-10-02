@@ -287,8 +287,36 @@ async function loadExport(data, name, files) {
   }
 }
 
-/** After every export is in: rows that name only a network code get the carrier the samples saw with that code. */
+// Status-bar labels a phone can report as its "carrier" for a while (a Pixel says "Wi-Fi Calling" while calls ride
+// Wi-Fi). They're never a network: a row carrying one belongs to its SIM's real carrier.
+const STATUS_LABEL = /\bwi ?fi calling\b|\bemergency\b|\bno service\b|\bsearching\b/;
+
+/**
+ * After every export is in, each row is credited to its SIM: a SIM (a phone's subscription id) keeps one carrier, the
+ * one most of its readings name, so a status-bar label or a variant spelling can't make a network of its own. Rows
+ * that name only a network code get the carrier the samples saw with that code.
+ */
 function finishLoad(data) {
+  const S = data.samples, counts = new Map();
+  for (let i = 0; i < S.ts.length; i++) {
+    if (STATUS_LABEL.test(S.net[i])) continue;
+    const k = S.dev[i] + "|" + S.sub[i];
+    let m = counts.get(k);
+    if (!m) counts.set(k, m = new Map());
+    m.set(S.net[i], (m.get(S.net[i]) || 0) + 1);
+  }
+  const sim = new Map([...counts].map(([k, m]) => [k, [...m.entries()].sort((a, b) => b[1] - a[1])[0][0]]));
+  for (let i = 0; i < S.ts.length; i++) {
+    const real = sim.get(S.dev[i] + "|" + S.sub[i]);
+    if (real) S.net[i] = real;
+  }
+  for (const t of ["checks", "tests", "server", "texts", "usage"]) {
+    for (const r of data[t]) {
+      const real = r.sub_id !== undefined && r.sub_id !== "" ? sim.get(r.dev + "|" + (+r.sub_id)) : null;
+      if (real) r.net = real;
+    }
+  }
+  data.sim = sim;
   const byCode = new Map();
   for (const [code, m] of data.plmn) byCode.set(code, [...m.entries()].sort((a, b) => b[1] - a[1])[0][0]);
   for (const r of data.server) if (!r.net && r.mcc_mnc) r.net = byCode.get(r.mcc_mnc) || noteNet(data, "", r.mcc_mnc);
@@ -485,8 +513,7 @@ function tallyTaps(data) {
     }
     for (const tap of taps) {
       const target = tap.rows.find(r => r.sub_id !== "" && r.sub_id === r.target_sub_id) || tap.rows[0];
-      const net = netKey(target.carrier, target.mcc_mnc);
-      if (!data.nets.has(net)) noteNet(data, target.carrier, target.mcc_mnc);
+      const net = (data.sim && data.sim.get(target.dev + "|" + (+target.sub_id))) || noteNet(data, target.carrier, target.mcc_mnc);
       const s = out.get(net) || { CALL_IN: [0, 0], TEXT_IN: [0, 0] };
       if (s[tap.kind]) s[tap.kind][tap.outcome === "REACHED" ? 0 : 1]++;
       out.set(net, s);
@@ -515,8 +542,10 @@ function tallyUsage(data) {
 
 const GLYPHS = ["■", "▲", "●", "◆", "★", "✚", "⬟"];
 const esc = s => String(s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
-// One decimal from 95% up, where the differences that matter live (99.1% vs 98.9% is about 4 hours in three weeks).
-const pct = x => isFinite(x) ? (x >= 1 ? "100" : (x * 100).toFixed(x >= 0.95 ? 1 : 0)) + "%" : "–";
+// One decimal from 95% up, where the differences that matter live (99.1% vs 98.9% is about 4 hours in three weeks),
+// rounded down there, so anything short of perfect never shows as 100%.
+const pct = x => !isFinite(x) ? "–" : x >= 1 ? "100%" :
+  x >= 0.95 ? (Math.floor(x * 1000) / 10).toFixed(1) + "%" : (x * 100).toFixed(0) + "%";
 const fmt = (x, d = 0) => isFinite(x) ? x.toFixed(d) : "–";
 const hours = s => s >= 3600 ? (s / 3600).toFixed(s >= 36000 ? 0 : 1) + " h" : Math.round(s / 60) + " min";
 
@@ -561,18 +590,21 @@ function netTable(rows, cols) {
   return html + "</tbody></table>";
 }
 
+// Half an hour of readings before a network can be "best" at anything: a minute passing through proves nothing.
+const halfHour = r => r.cov && r.cov.up + r.cov.down >= 1800;
+
 const coverageCols = [
   { title: "Time with service", better: "high", value: r => r.cov ? r.cov.up / (r.cov.up + r.cov.down) : NaN, show: pct,
-    enough: r => r.cov && r.cov.up + r.cov.down >= 1800,
+    enough: halfHour,
     cell: r => r.cov && r.cov.up + r.cov.down > 0 ? bar(r.cov.up / (r.cov.up + r.cov.down), r.key, pct(r.cov.up / (r.cov.up + r.cov.down))) +
       ` <span class="few">of ${hours(r.cov.up + r.cov.down)}</span>` : "–" },
-  { title: "No service", better: "low", value: r => r.cov ? r.cov.down : NaN, show: hours, enough: r => r.cov && r.cov.up + r.cov.down >= 1800,
+  { title: "No service", better: "low", value: r => r.cov ? r.cov.down : NaN, show: hours, enough: halfHour,
     cell: r => r.cov ? hours(r.cov.down) : "–" },
-  { title: "Typical signal", better: "high", value: r => r.cov ? r.cov.rsrpMedian : NaN, show: v => fmt(v),
+  { title: "Typical signal", better: "high", value: r => r.cov ? r.cov.rsrpMedian : NaN, show: v => fmt(v), enough: halfHour,
     cell: r => r.cov && isFinite(r.cov.rsrpMedian) ? fmt(r.cov.rsrpMedian) + " dBm" : "–" },
-  { title: "Weak (< −110 dBm)", better: "low", value: r => r.cov && r.cov.sig ? r.cov.weak / r.cov.sig : NaN, show: pct,
+  { title: "Weak (< −110 dBm)", better: "low", value: r => r.cov && r.cov.sig ? r.cov.weak / r.cov.sig : NaN, show: pct, enough: halfHour,
     cell: r => r.cov && r.cov.sig ? pct(r.cov.weak / r.cov.sig) : "–" },
-  { title: "On 5G", better: "high", value: r => r.cov && r.cov.up ? r.cov.nr / r.cov.up : NaN, show: pct,
+  { title: "On 5G", better: "high", value: r => r.cov && r.cov.up ? r.cov.nr / r.cov.up : NaN, show: pct, enough: halfHour,
     cell: r => r.cov && r.cov.up ? pct(r.cov.nr / r.cov.up) : "–" },
 ];
 
@@ -596,12 +628,14 @@ function rowsFor(bucket, cov, tests) {
 }
 
 function render(data) {
-  // Networks, most-seen first, each with its most common label.
+  // Networks, most-seen first, each with its most common label; only ones that some row is still credited to.
   const counts = new Map();
   for (const k of data.samples.net) counts.set(k, (counts.get(k) || 0) + 1);
+  const used = new Set();
+  for (const t of ["checks", "tests", "server", "texts", "usage"]) for (const r of data[t]) if (r.net) used.add(r.net);
   NETS = [...data.nets.values()].map(n => ({
     key: n.key, label: [...n.counts.entries()].sort((a, b) => b[1] - a[1])[0][0], seen: counts.get(n.key) || 0,
-  })).sort((a, b) => b.seen - a.seen).map((n, i) => ({ ...n, i }));
+  })).filter(n => n.seen > 0 || used.has(n.key)).sort((a, b) => b.seen - a.seen).map((n, i) => ({ ...n, i }));
 
   const places = allPlaces(data);
   const cov = coverage(data, places);
@@ -685,8 +719,10 @@ function render(data) {
   document.getElementById("notes").innerHTML =
     `<p><strong>How to read this.</strong> "Time with service" leaves out airplane mode. "Typical signal" is the middle RSRP reading ` +
     `(−80 dBm is strong, −110 dBm weak, −120 dBm barely usable). A dual-SIM phone measures both its networks at the same moments ` +
-    `and places, which makes that comparison the fairest one here. "▲ best" needs at least two networks with enough data ` +
-    `(half an hour of readings, 10 checks or 3 speed tests).</p>` +
+    `and places, which makes that comparison the fairest one here. Data checks and speed tests run on whichever SIM ` +
+    `carries mobile data, so a SIM that never did shows "–" there. "▲ best" needs at least two networks with enough data ` +
+    `(half an hour of readings, 10 checks or 3 speed tests). Each reading counts for its SIM's own carrier, even when ` +
+    `the phone briefly showed something else, such as "Wi-Fi Calling".</p>` +
     `<p>Family Coverage is free and open source, by StorieDev.</p>`;
 
   document.getElementById("report").classList.remove("hidden");

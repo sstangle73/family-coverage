@@ -41,7 +41,11 @@ class Uploader(private val prefs: Prefs, private val store: CsvStore) {
         return try {
             if (prefs.deviceStatus != "approved") {
                 register(server, member)
-                if (prefs.deviceStatus != "approved") return "waiting for approval on the server (device ${prefs.deviceId})"
+                when (prefs.deviceStatus) {
+                    "approved" -> {}
+                    "revoked" -> return "the server has revoked this phone (device ${prefs.deviceId})"
+                    else -> return "waiting for approval on the server (device ${prefs.deviceId})"
+                }
             }
             val (sent, refused) = pushFiles(server)
             pushManifest(server, household, member)
@@ -50,10 +54,15 @@ class Uploader(private val prefs: Prefs, private val store: CsvStore) {
             "up to date (${sent / 1024} KB sent)" +
                 if (refused.isEmpty()) "" else "; server refused ${refused.joinToString()} (an older server?)"
         } catch (e: HttpStatus) {
+            val otherHousehold = e.code == 403 && e.body.contains("another household")
             if (e.code == 401) prefs.deviceStatus = "unregistered"
-            if (e.code == 403) prefs.deviceStatus = "pending"
+            if (e.code == 403) prefs.deviceStatus = if (otherHousehold) "refused" else "pending"
             prefs.lastUploadError = "HTTP ${e.code}"
-            "server answered HTTP ${e.code}"
+            when {
+                otherHousehold -> "the server is set up for another household (its FC_HOUSEHOLD)"
+                e.code == 429 -> "the server has too many phones waiting for approval"
+                else -> "server answered HTTP ${e.code}"
+            }
         } catch (e: Exception) {
             prefs.lastUploadError = e.javaClass.simpleName
             "upload failed: ${e.javaClass.simpleName}"
@@ -139,14 +148,15 @@ class Uploader(private val prefs: Prefs, private val store: CsvStore) {
             GZIPOutputStream(c.outputStream).use { it.write(body.toString().toByteArray(Charsets.UTF_8)) }
             val code = c.responseCode
             val text = (if (code in 200..299) c.inputStream else c.errorStream)?.bufferedReader()?.use { it.readText() } ?: ""
-            if (code !in 200..299) throw HttpStatus(code)
+            if (code !in 200..299) throw HttpStatus(code, text.take(200))
             return JSONObject(text)
         } finally {
             c.disconnect()
         }
     }
 
-    private class HttpStatus(val code: Int) : IOException("HTTP $code")
+    /** A refusal, with the start of the server's answer (it says why, as JSON). */
+    private class HttpStatus(val code: Int, val body: String = "") : IOException("HTTP $code")
 
     companion object {
         const val MAX_CHUNK = 512 * 1024

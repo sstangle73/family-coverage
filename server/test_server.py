@@ -1,5 +1,6 @@
 """Tests for the Family Coverage server: python -m unittest discover -s server -p "test_*.py"."""
 import gzip
+import io
 import hashlib
 import json
 import os
@@ -24,6 +25,9 @@ class ServerTest(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         srv.DATA = Path(self.tmp.name)
         srv.EXPORT_TOKEN_FILE = srv.DATA / "export_token"
+        srv.REPORT_PASSWORD_FILE = srv.DATA / "report_password"
+        srv.FAILS.clear()
+        srv.SESSIONS.clear()
         srv.HOUSEHOLD = ""
         srv.API_NETS = srv._nets("0.0.0.0/0,::/0")
         srv.OPEN_NETS = srv._nets("127.0.0.0/8")
@@ -160,6 +164,64 @@ class ServerTest(unittest.TestCase):
         text = body.decode()
         self.assertIn('familycoverage_ended{member="sam"} 1', text)
         self.assertIn('familycoverage_devices{status="approved"} 1', text)
+
+    def test_live_report_needs_the_password(self):
+        # The page itself has no data, and it's switched to live mode.
+        code, body, _ = self.call("GET", "/report/")
+        self.assertEqual(200, code)
+        self.assertIn(b'window.FC_LIVE_API = "/api/report"', body)
+        self.assertEqual(401, self.call("GET", "/api/report/devices")[0])
+        login = lambda pw: self.call("POST", "/api/report/login", {"password": pw}, gz=False)
+        self.assertEqual(503, login("anything at all")[0])  # no password set yet
+        srv.write_password_hash("correct horse battery")
+        if os.name == "posix":
+            self.assertEqual(0o600, os.stat(srv.REPORT_PASSWORD_FILE).st_mode & 0o777)
+        with self.assertRaises(ValueError):
+            srv.write_password_hash("short")
+        code, body, _ = login("correct horse battery")
+        self.assertEqual(200, code)
+        token = json.loads(body)["token"]
+        # Data appears once a phone uploads; each phone comes as the same zip it would export.
+        self.assertEqual({"devices": []}, json.loads(self.call("GET", "/api/report/devices", key=token)[1]))
+        self.register()
+        self.approve()
+        rows = "ts,member\n1,Sam\n"
+        self.call("POST", "/api/upload", {"files": [{"name": "samples-2026-10-01.csv", "offset": 0, "data": rows}]}, key=KEY)
+        devices = json.loads(self.call("GET", "/api/report/devices", key=token)[1])["devices"]
+        self.assertEqual([DEVICE], [d["id"] for d in devices])
+        self.assertEqual("Sam", devices[0]["member"])
+        version = devices[0]["version"]
+        code, body, headers = self.call("GET", f"/api/report/zip/{DEVICE}", key=token)
+        self.assertEqual(200, code)
+        self.assertEqual("application/zip", headers["Content-Type"])
+        with zipfile.ZipFile(io.BytesIO(body)) as z:
+            self.assertEqual(rows.encode(), z.read("csv/samples-2026-10-01.csv"))
+            self.assertEqual(DEVICE, json.loads(z.read("manifest.json"))["device_id"])
+        # A new upload changes the phone's version, so the page fetches it again.
+        self.call("POST", "/api/upload", {"files": [{"name": "samples-2026-10-01.csv", "offset": 16, "data": "2,Sam\n"}]}, key=KEY)
+        again = json.loads(self.call("GET", "/api/report/devices", key=token)[1])["devices"][0]["version"]
+        self.assertNotEqual(version, again)
+        self.assertEqual(404, self.call("GET", "/api/report/zip/0000000000000000", key=token)[0])
+        self.assertEqual(401, self.call("GET", f"/api/report/zip/{DEVICE}", key="not-a-session")[0])
+
+    def test_report_logins_lock_after_five_wrong_passwords(self):
+        srv.write_password_hash("correct horse battery")
+        login = lambda pw: self.call("POST", "/api/report/login", {"password": pw}, gz=False)[0]
+        self.assertEqual([401] * 5, [login("wrong password!") for _ in range(5)])
+        self.assertEqual(429, login("correct horse battery"))  # locked, even with the right one
+        srv.FAILS.clear()
+        self.assertEqual(200, login("correct horse battery"))
+
+    def test_root_points_to_the_report(self):
+        req = urllib.request.Request(self.base + "/")
+        opener = urllib.request.build_opener(type("NoRedirect", (urllib.request.HTTPRedirectHandler,), {
+            "redirect_request": lambda *a, **k: None}))
+        try:
+            opener.open(req, timeout=10)
+            self.fail("expected a redirect")
+        except urllib.error.HTTPError as e:
+            self.assertEqual(302, e.code)
+            self.assertEqual("/report/", e.headers["Location"])
 
     def test_slugs(self):
         self.assertEqual("mary-ann", srv.slug("Mary Ann"))

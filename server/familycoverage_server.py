@@ -2,13 +2,14 @@
 """Family Coverage server: an optional home for a household's recordings.
 
 The phones copy their daily CSV files here, append-only: each upload says "file X from byte N", the server appends
-what it doesn't have and answers with its size. It also answers the app's server test, serves a read-only export,
-and writes the same zips the phones export, for the report page. Python standard library only.
+what it doesn't have and answers with its size. It also answers the app's server test, serves the report page live
+(behind a password) and a read-only export, and writes the same zips the phones export. Python standard library only.
 
     python familycoverage_server.py serve
     python familycoverage_server.py list                  # registered installs
     python familycoverage_server.py approve <device_id>   # let an install upload (check the id in its app first)
     python familycoverage_server.py revoke <device_id>
+    python familycoverage_server.py set-report-password   # asks for the live report's password; --stdin reads it
     python familycoverage_server.py new-export-token      # writes the export token file; prints only its length
     python familycoverage_server.py export-zips <dir>     # one zip per install, in the app's export format
 
@@ -16,10 +17,15 @@ Settings (environment):
     FC_DATA            where the data lives (default /data)
     FC_LISTEN          host:port (default 0.0.0.0:8745)
     FC_HOUSEHOLD       if set, only installs from this household id may register
-    FC_API_ALLOW       CIDRs that may use /api/* (default: everyone; installs still need approving)
+    FC_API_ALLOW       CIDRs that may use /api/* and /report/ (default: everyone; installs still need approving, and
+                       the report its password)
     FC_OPEN_ALLOW      CIDRs that may read /healthz and /metrics (default: private networks)
-    FC_EXPORT_TOKEN_FILE  the export API's token (default <FC_DATA>/export_token)
+    FC_EXPORT_TOKEN_FILE   the export API's token (default <FC_DATA>/export_token)
+    FC_REPORT_PASSWORD_FILE  the report password's scrypt hash (default <FC_DATA>/report_password)
+    FC_REPORT_HTML     the report page (default: report.html beside this file, else ../docs/report/index.html)
 """
+import base64
+import getpass
 import gzip
 import hashlib
 import hmac
@@ -43,9 +49,15 @@ HOUSEHOLD = os.environ.get("FC_HOUSEHOLD", "").strip().lower()
 API_ALLOW = os.environ.get("FC_API_ALLOW", "0.0.0.0/0,::/0")
 OPEN_ALLOW = os.environ.get("FC_OPEN_ALLOW", "10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,127.0.0.0/8,::1/128,fc00::/7")
 EXPORT_TOKEN_FILE = Path(os.environ.get("FC_EXPORT_TOKEN_FILE", str(DATA / "export_token")))
+REPORT_PASSWORD_FILE = Path(os.environ.get("FC_REPORT_PASSWORD_FILE", str(DATA / "report_password")))
+HERE = Path(__file__).resolve().parent
+REPORT_HTML = Path(os.environ.get("FC_REPORT_HTML") or next(
+    (p for p in (HERE / "report.html", HERE.parent / "docs" / "report" / "index.html") if p.is_file()), HERE / "report.html"))
 MAX_TEST_DOWN = 2_000_000
 MAX_TEST_UP = 1_000_000
 MAX_PENDING = 20
+SESSION_HOURS = 12
+SCRYPT = {"n": 2 ** 15, "r": 8, "p": 1, "maxmem": 64 * 1024 * 1024}
 
 # The app's tables (its Tables.ALL).
 NAME = re.compile(r"^(samples|track|tests|heartbeat|server|usage|checks|events|texts)-(\d{4}-\d{2}-\d{2})\.csv$")
@@ -161,32 +173,139 @@ def complete_rows(path):
     return data[:cut + 1] if cut >= 0 else b""
 
 
+def device_manifest(member, device_id, dev_dir, devs):
+    """The phone's own manifest (household, places) if it sent one, else what the server knows."""
+    try:
+        manifest = json.loads((dev_dir / "manifest.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        manifest = {"format": "family-coverage-export", "version": 1,
+                    "member": devs.get(device_id, {}).get("member", member), "device_id": device_id}
+    manifest["device_id"] = device_id
+    return manifest
+
+
+def write_device_zip(member, device_id, dev_dir, fh, devs):
+    """One install's data, laid out like the app's own export, so the report page opens either."""
+    csvs = sorted(f for f in dev_dir.iterdir() if NAME.match(f.name))
+    manifest = device_manifest(member, device_id, dev_dir, devs)
+    manifest["files"] = [f"csv/{f.name}" for f in csvs]
+    manifest["exported_at"] = datetime.now().astimezone().isoformat(timespec="milliseconds")
+    manifest["exported_by"] = "server"
+    with zipfile.ZipFile(fh, "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr("manifest.json", json.dumps(manifest, indent=2))
+        for f in csvs:
+            z.writestr(f"csv/{f.name}", complete_rows(f))
+    return len(csvs)
+
+
 def export_zips(out_dir):
-    """One zip per install, laid out like the app's own export, so the report page opens either."""
+    """One zip per install into out_dir, for the report page."""
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
     devs = load_devices()
     written = []
     for member, device_id, dev_dir in device_dirs():
-        csvs = sorted(f for f in dev_dir.iterdir() if NAME.match(f.name))
-        if not csvs:
+        if not any(NAME.match(f.name) for f in dev_dir.iterdir()):
             continue
-        try:
-            manifest = json.loads((dev_dir / "manifest.json").read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            manifest = {"format": "family-coverage-export", "version": 1,
-                        "member": devs.get(device_id, {}).get("member", member), "device_id": device_id}
-        manifest["device_id"] = device_id
-        manifest["files"] = [f"csv/{f.name}" for f in csvs]
-        manifest["exported_at"] = datetime.now().astimezone().isoformat(timespec="milliseconds")
-        manifest["exported_by"] = "server"
         target = out / f"family-coverage-{member}-{device_id[:6]}-{datetime.now().date()}.zip"
-        with zipfile.ZipFile(target, "w", zipfile.ZIP_DEFLATED) as z:
-            z.writestr("manifest.json", json.dumps(manifest, indent=2))
-            for f in csvs:
-                z.writestr(f"csv/{f.name}", complete_rows(f))
+        with open(target, "wb") as fh:
+            write_device_zip(member, device_id, dev_dir, fh, devs)
         written.append(target)
     return written
+
+
+# ---- the live report: the page, its password, and each phone's data as an export zip ---------------------------
+
+def hash_password(pw):
+    salt = os.urandom(16)
+    dk = hashlib.scrypt(pw.encode("utf-8"), salt=salt, dklen=32, **SCRYPT)
+    return "scrypt$%d$%d$%d$%s$%s" % (SCRYPT["n"], SCRYPT["r"], SCRYPT["p"], base64.b64encode(salt).decode(),
+                                      base64.b64encode(dk).decode())
+
+
+def check_password(pw):
+    try:
+        kind, n, r, p, salt, want = REPORT_PASSWORD_FILE.read_text(encoding="utf-8").strip().split("$")
+        want = base64.b64decode(want)
+        dk = hashlib.scrypt(pw.encode("utf-8"), salt=base64.b64decode(salt), n=int(n), r=int(r), p=int(p),
+                            maxmem=SCRYPT["maxmem"], dklen=len(want))
+        return kind == "scrypt" and hmac.compare_digest(dk, want)
+    except (OSError, ValueError):
+        return False
+
+
+def write_password_hash(pw):
+    if len(pw) < 12:
+        raise ValueError("the password must be at least 12 characters")
+    REPORT_PASSWORD_FILE.parent.mkdir(parents=True, exist_ok=True)
+    tmp = REPORT_PASSWORD_FILE.with_suffix(".tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(hash_password(pw) + "\n")
+    os.replace(tmp, REPORT_PASSWORD_FILE)
+
+
+SESSIONS, FAILS, _session_lock = {}, [], threading.Lock()
+
+
+def session_new():
+    tok = secrets.token_urlsafe(32)
+    now = time.time()
+    exp = now + SESSION_HOURS * 3600
+    with _session_lock:
+        for t in [t for t, e in SESSIONS.items() if e < now]:
+            del SESSIONS[t]
+        SESSIONS[tok] = exp
+    return tok, exp
+
+
+def session_ok(tok):
+    with _session_lock:
+        exp = SESSIONS.get(tok)
+        if exp and exp > time.time():
+            return True
+        SESSIONS.pop(tok, None)
+    return False
+
+
+def report_page():
+    """The report page, switched to live mode: it asks this server for the data instead of files."""
+    html = REPORT_HTML.read_text(encoding="utf-8")
+    live = '<script>window.FC_LIVE_API = "/api/report";</script>'
+    return re.sub(r"<!--FC_LIVE[^>]*-->", lambda _: live, html, count=1).encode("utf-8")
+
+
+def device_version(dev_dir):
+    """Changes whenever the install's files do, so the page fetches a phone again only after it uploads."""
+    h = hashlib.sha1()
+    for f in sorted(dev_dir.iterdir()):
+        if NAME.match(f.name) or f.name == "manifest.json":
+            st = f.stat()
+            h.update(f"{f.name}:{st.st_size}:{st.st_mtime_ns};".encode())
+    return h.hexdigest()[:16]
+
+
+def report_devices():
+    devs = load_devices()
+    out = []
+    for member, device_id, dev_dir in device_dirs():
+        d = devs.get(device_id, {})
+        files = [f for f in dev_dir.iterdir() if NAME.match(f.name)]
+        if not files:
+            continue
+        out.append({"id": device_id, "member": d.get("member", member), "version": device_version(dev_dir),
+                    "files": len(files), "bytes": sum(f.stat().st_size for f in files),
+                    "last_upload_epoch": d.get("last_upload_epoch")})
+    return {"devices": out}
+
+
+def report_zip(device_id):
+    for member, did, dev_dir in device_dirs():
+        if did == device_id:
+            buf = io.BytesIO()
+            write_device_zip(member, did, dev_dir, buf, load_devices())
+            return buf.getvalue()
+    return None
 
 
 def last_heartbeat(dev_dir):
@@ -325,7 +444,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         path = self.path.split("?", 1)[0]
         if path == "/":
-            return self._send(200, b"Family Coverage server", "text/plain; charset=utf-8")
+            return self._send(302, b"", "text/plain", {"Location": "/report/"})
         if path == "/healthz":
             if not self._allowed(OPEN_NETS):
                 return self._send(403, {"error": "forbidden"})
@@ -340,6 +459,15 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, metrics_text().encode("utf-8"), "text/plain; version=0.0.4")
         if not self._allowed(API_NETS):
             return self._send(403, {"error": "forbidden"})
+        if path == "/report":
+            return self._send(301, b"", "text/plain", {"Location": "/report/"})
+        if path == "/report/":
+            try:
+                return self._send(200, report_page(), "text/html; charset=utf-8")
+            except OSError:
+                return self._send(503, {"error": "the report page isn't installed beside the server"})
+        if path.startswith("/api/report/"):
+            return self._report_get(path)
         if path == "/api/export" or path.startswith("/api/export/"):
             return self._export(path)
         if path == "/api/test/ping":
@@ -353,6 +481,36 @@ class Handler(BaseHTTPRequestHandler):
             n = min(int(m.group(1)) if m else 0, MAX_TEST_DOWN)
             return self._send(200, bytes(n), "application/octet-stream")
         return self._send(404, {"error": "not found"})
+
+    def _report_get(self, path):
+        if not session_ok(self._bearer()):
+            return self._send(401, {"error": "enter the report password"})
+        if path == "/api/report/devices":
+            return self._send(200, report_devices())
+        m = re.match(r"^/api/report/zip/([0-9a-f]{16})$", path)
+        if m:
+            data = report_zip(m.group(1))
+            if data is None:
+                return self._send(404, {"error": "no such phone"})
+            return self._send(200, data, "application/zip")
+        return self._send(404, {"error": "not found"})
+
+    def _report_login(self, body):
+        if not REPORT_PASSWORD_FILE.is_file():
+            return self._send(503, {"error": "no report password yet: run set-report-password on the server"})
+        now = time.time()
+        with _session_lock:
+            FAILS[:] = [t for t in FAILS if now - t < 900]
+            if len(FAILS) >= 5:
+                return self._send(429, {"error": "too many wrong passwords: wait 15 minutes"})
+        if not isinstance(body.get("password"), str) or not check_password(body["password"]):
+            with _session_lock:
+                FAILS.append(now)
+            self.log_message("report login refused")
+            return self._send(401, {"error": "wrong password"})
+        tok, exp = session_new()
+        self.log_message("report unlocked for %d h", SESSION_HOURS)
+        return self._send(200, {"token": tok, "expires": int(exp)})
 
     def _export(self, path):
         try:
@@ -419,6 +577,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(400, {"error": "bad json"})
         if not isinstance(body, dict):
             return self._send(400, {"error": "bad json"})
+        if path == "/api/report/login":
+            return self._report_login(body)
         if path == "/api/register":
             return self._register(body)
         if path == "/api/upload":
@@ -547,6 +707,19 @@ def cli(argv):
             devs[argv[2]][cmd + "d_at"] = now_iso()
             save_devices(devs)
         print(f"{argv[2]} {devs[argv[2]]['status']}")
+    elif cmd == "set-report-password":
+        if "--stdin" in argv:
+            pw = sys.stdin.readline().rstrip("\r\n")   # PowerShell pipes CRLF
+        else:
+            pw = getpass.getpass("Report password (12 characters or more): ")
+            if getpass.getpass("Again: ") != pw:
+                sys.exit("FAILED: the two didn't match")
+        try:
+            write_password_hash(pw)
+        except ValueError as e:
+            sys.exit(f"FAILED: {e}")
+        pw = None
+        print(f"report password: hash written to {REPORT_PASSWORD_FILE} (mode 600)")
     elif cmd == "new-export-token":
         EXPORT_TOKEN_FILE.parent.mkdir(parents=True, exist_ok=True)
         token = secrets.token_hex(32)

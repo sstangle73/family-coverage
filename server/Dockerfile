@@ -1,7 +1,9 @@
-# Family Coverage server: Python's standard library only, so the image is just Python and one file.
+# Family Coverage server: Python's standard library only, so the image is Python, one file and the report page.
+# Built from the repository root (compose.yaml sets the context), so the page comes from docs/report/.
 FROM python:3.13-alpine
 RUN adduser -D -u 10001 fc && mkdir -p /data && chown fc /data
-COPY familycoverage_server.py /app/familycoverage_server.py
+COPY server/familycoverage_server.py /app/familycoverage_server.py
+COPY docs/report/index.html /app/report.html
 USER fc
 ENV FC_DATA=/data FC_LISTEN=0.0.0.0:8745
 VOLUME /data

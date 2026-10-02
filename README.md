@@ -66,7 +66,8 @@ The privacy policy is at [storiedev.com/privacy](https://storiedev.com/privacy);
 ## Optional server
 
 Phones can copy their data to a small server your household runs (Python, standard library only, with a Docker
-image). It also answers the app's "reach my server" test. See [server/](server/).
+image). It serves the report page live, behind a password, so you can watch results come in as the phones upload,
+and it answers the app's "reach my server" test. See [server/](server/).
 
 ## Building
 

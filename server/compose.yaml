@@ -1,8 +1,12 @@
 # docker compose up -d --build   (from this folder)
 # Then: docker compose exec familycoverage python /app/familycoverage_server.py list
+#       docker compose exec -it familycoverage python /app/familycoverage_server.py set-report-password
+# The live report is then at http://<this machine>:8745/report/.
 services:
   familycoverage:
-    build: .
+    build:
+      context: ..                    # the repository root: the image takes the report page from docs/report/
+      dockerfile: server/Dockerfile
     container_name: familycoverage
     restart: unless-stopped
     ports:

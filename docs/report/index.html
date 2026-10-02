@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Family Coverage report</title>
 <meta name="description" content="Compare mobile networks place by place from Family Coverage exports. Runs entirely in your browser.">
+<!--FC_LIVE: a household server replaces this line with window.FC_LIVE_API, which switches the page to live mode.-->
 <style>
   :root {
     --bg: #fbfbfa; --panel: #ffffff; --ink: #1d1f23; --muted: #5b616b; --line: #dfe2e6; --soft: #f1f3f5;
@@ -59,13 +60,33 @@
   footer { margin-top: 48px; font-size: 0.85rem; color: var(--muted); }
   a { color: var(--accent); }
   .hidden { display: none; }
+  input[type="password"] { font: inherit; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); color: var(--ink); min-width: 240px; }
+  .ok { color: var(--accent); }
 </style>
 </head>
 <body>
 <main>
   <h1>Family Coverage report</h1>
-  <p class="muted">Pick the export from every phone in your household. The files are read here, in your browser:
+  <p class="muted" id="intro">Pick the export from every phone in your household. The files are read here, in your browser:
     nothing is uploaded, and nothing is kept after you close the page.</p>
+
+  <div id="live" class="drop hidden">
+    <form id="loginForm" class="hidden">
+      <p><strong>Live from your household's server.</strong> Enter the report password to see the latest results.</p>
+      <div class="row">
+        <input type="text" name="username" autocomplete="username" value="report" hidden>
+        <input id="password" type="password" name="password" autocomplete="current-password" placeholder="Report password" required>
+        <button class="primary" type="submit">Open</button>
+      </div>
+    </form>
+    <div id="liveBar" class="hidden">
+      <p id="liveStatus" class="small" aria-live="polite"></p>
+      <div class="row"><button id="refresh" type="button">Refresh now</button></div>
+      <p class="small muted">The phones upload every 15 minutes on Wi-Fi and every hour elsewhere, so the newest
+        readings can be up to an hour old. This page checks for new uploads every 5 minutes while it's open.</p>
+    </div>
+    <p id="liveError" class="small err" aria-live="polite"></p>
+  </div>
 
   <div id="drop" class="drop">
     <p><strong>Drop the export zips here</strong>, or</p>
@@ -191,6 +212,7 @@ function emptyData() {
     samples: { ts: [], dev: [], sub: [], net: [], svc: [], nr: [], rsrp: [], lat: [], lon: [], acc: [], spd: [], wifi: [] },
     checks: [], tests: [], server: [], texts: [], events: [], usage: [],
     nets: new Map(),      // key -> { key, label, counts: Map(label -> n) }
+    plmn: new Map(),      // network code -> Map(net key -> samples), to name rows that carry only a code
   };
 }
 
@@ -235,7 +257,13 @@ async function loadExport(data, name, files) {
         const t = tsMs(r[col("ts")]);
         if (!isFinite(t)) return;
         S.ts.push(t); S.dev.push(dev); S.sub.push(+r[col("sub_id")] || 0);
-        S.net.push(noteNet(data, r[col("carrier")], r[col("mcc_mnc")]));
+        const plmn = r[col("mcc_mnc")], key = noteNet(data, r[col("carrier")], plmn);
+        S.net.push(key);
+        if (plmn) {
+          let m = data.plmn.get(plmn);
+          if (!m) data.plmn.set(plmn, m = new Map());
+          m.set(key, (m.get(key) || 0) + 1);
+        }
         S.svc.push(SVC[r[col("service_state")]] ?? 2);
         const rat = r[col("rat")];
         S.nr.push(rat === "NR_SA" || rat === "NR_NSA" ? 1 : 0);
@@ -244,8 +272,9 @@ async function loadExport(data, name, files) {
         S.wifi.push(r[col("wifi_connected")] === "true" ? 1 : 0);
         device.first = Math.min(device.first, t); device.last = Math.max(device.last, t); device.rows++;
       });
-    } else if (["checks", "tests", "server", "texts", "events", "usage"].includes(table)) {
-      const out = data[table];
+    } else if (["checks", "tests", "server", "tailnet", "texts", "events", "usage"].includes(table)) {
+      // Coverage Log (the family logger this app grew from) calls its server test "tailnet": same idea, plus the path.
+      const out = data[table === "tailnet" ? "server" : table];
       parseCsv(text, hd => { h = hd; }, r => {
         const o = { dev };
         for (let i = 0; i < h.length; i++) o[h[i]] = r[i] ?? "";
@@ -257,6 +286,17 @@ async function loadExport(data, name, files) {
     }
   }
 }
+
+/** After every export is in: rows that name only a network code get the carrier the samples saw with that code. */
+function finishLoad(data) {
+  const byCode = new Map();
+  for (const [code, m] of data.plmn) byCode.set(code, [...m.entries()].sort((a, b) => b[1] - a[1])[0][0]);
+  for (const r of data.server) if (!r.net && r.mcc_mnc) r.net = byCode.get(r.mcc_mnc) || noteNet(data, "", r.mcc_mnc);
+  return data;
+}
+
+/** A member's name for display: Coverage Log's lower-case labels ("sam") get a capital. */
+const who = m => /^[a-z]/.test(m) && m === m.toLowerCase() ? m[0].toUpperCase() + m.slice(1) : m;
 
 // ---------------------------------------------------------------------------------------------------------------
 // The sums.
@@ -357,7 +397,11 @@ function tallyTests(data, places) {
   const get = (b, net) => {
     const k = b + "|" + net;
     let s = out.get(k);
-    if (!s) { s = { checks: 0, checksOk: 0, connect: [], tests: 0, testsOk: 0, down: [], up: [], latency: [], server: 0, serverOk: 0, serverLatency: [] }; out.set(k, s); }
+    if (!s) {
+      s = { checks: 0, checksOk: 0, connect: [], tests: 0, testsOk: 0, down: [], up: [], latency: [], server: 0, serverOk: 0,
+            serverLatency: [], pathKnown: 0, direct: 0 };
+      out.set(k, s);
+    }
     return s;
   };
   const where = r => {
@@ -378,11 +422,17 @@ function tallyTests(data, places) {
       if (r.result === "OK") { s.testsOk++; s.down.push(num(r.down_mbps)); s.up.push(num(r.up_mbps)); s.latency.push(num(r.latency_ms)); }
     }
   }
+  // Results that say something about the phone's setup rather than the network don't count.
+  const notNetwork = new Set(["NOT_ON_TAILNET", "REFUSED", "NOT_APPROVED"]);
   for (const r of data.server) {
-    if (!r.net || r.wifi_connected === "true") continue;
+    if (!r.net || r.wifi_connected === "true" || notNetwork.has(r.result)) continue;
     for (const b of where(r)) {
       const s = get(b, r.net); s.server++;
-      if (r.result === "OK") { s.serverOk++; s.serverLatency.push(num(r.latency_ms)); }
+      if (r.result === "OK") {
+        s.serverOk++; s.serverLatency.push(num(r.latency_ms));
+        // Coverage Log's rows say how the server reached the phone at the end: direct, or through a relay.
+        if (r.path_end) { s.pathKnown++; if (r.path_end === "direct") s.direct++; }
+      }
     }
   }
   return out;
@@ -495,7 +545,9 @@ function netTable(rows, cols) {
       if (c.better === "high" ? v > bv : v < bv) { bv = v; bi = i; }
     });
     const ok = rows.filter(r => isFinite(c.value(r)) && (!c.enough || c.enough(r)));
-    const tied = ok.filter(r => c.value(r) === bv).length > 1; // a tie has no winner
+    // A tie has no winner, judged as shown: two networks both showing 98.9% don't get a "best" between them.
+    const show = c.show || (v => String(v));
+    const tied = ok.filter(r => show(c.value(r)) === show(bv)).length > 1;
     return ok.length >= 2 && !tied ? bi : -1;
   });
   let html = `<table><thead><tr><th>Network</th>${cols.map(c => `<th>${c.title}</th>`).join("")}</tr></thead><tbody>`;
@@ -510,28 +562,29 @@ function netTable(rows, cols) {
 }
 
 const coverageCols = [
-  { title: "Time with service", better: "high", value: r => r.cov ? r.cov.up / (r.cov.up + r.cov.down) : NaN,
+  { title: "Time with service", better: "high", value: r => r.cov ? r.cov.up / (r.cov.up + r.cov.down) : NaN, show: pct,
     enough: r => r.cov && r.cov.up + r.cov.down >= 1800,
     cell: r => r.cov && r.cov.up + r.cov.down > 0 ? bar(r.cov.up / (r.cov.up + r.cov.down), r.key, pct(r.cov.up / (r.cov.up + r.cov.down))) +
       ` <span class="few">of ${hours(r.cov.up + r.cov.down)}</span>` : "–" },
-  { title: "No service", better: "low", value: r => r.cov ? r.cov.down : NaN, enough: r => r.cov && r.cov.up + r.cov.down >= 1800,
+  { title: "No service", better: "low", value: r => r.cov ? r.cov.down : NaN, show: hours, enough: r => r.cov && r.cov.up + r.cov.down >= 1800,
     cell: r => r.cov ? hours(r.cov.down) : "–" },
-  { title: "Typical signal", better: "high", value: r => r.cov ? r.cov.rsrpMedian : NaN,
+  { title: "Typical signal", better: "high", value: r => r.cov ? r.cov.rsrpMedian : NaN, show: v => fmt(v),
     cell: r => r.cov && isFinite(r.cov.rsrpMedian) ? fmt(r.cov.rsrpMedian) + " dBm" : "–" },
-  { title: "Weak (< −110 dBm)", better: "low", value: r => r.cov && r.cov.sig ? r.cov.weak / r.cov.sig : NaN,
+  { title: "Weak (< −110 dBm)", better: "low", value: r => r.cov && r.cov.sig ? r.cov.weak / r.cov.sig : NaN, show: pct,
     cell: r => r.cov && r.cov.sig ? pct(r.cov.weak / r.cov.sig) : "–" },
-  { title: "On 5G", better: "high", value: r => r.cov && r.cov.up ? r.cov.nr / r.cov.up : NaN,
+  { title: "On 5G", better: "high", value: r => r.cov && r.cov.up ? r.cov.nr / r.cov.up : NaN, show: pct,
     cell: r => r.cov && r.cov.up ? pct(r.cov.nr / r.cov.up) : "–" },
 ];
 
 const testCols = [
-  { title: "Data checks OK", better: "high", value: r => r.t && r.t.checks ? r.t.checksOk / r.t.checks : NaN, enough: r => r.t && r.t.checks >= 10,
+  { title: "Data checks OK", better: "high", value: r => r.t && r.t.checks ? r.t.checksOk / r.t.checks : NaN, show: pct,
+    enough: r => r.t && r.t.checks >= 10,
     cell: r => r.t && r.t.checks ? bar(r.t.checksOk / r.t.checks, r.key, pct(r.t.checksOk / r.t.checks)) + ` <span class="few">of ${r.t.checks}</span>` : "–" },
-  { title: "Download", better: "high", value: r => r.t ? median(r.t.down) : NaN, enough: r => r.t && r.t.testsOk >= 3,
+  { title: "Download", better: "high", value: r => r.t ? median(r.t.down) : NaN, show: v => fmt(v, 1), enough: r => r.t && r.t.testsOk >= 3,
     cell: r => r.t && r.t.testsOk ? fmt(median(r.t.down), 1) + " Mbps" : "–" },
-  { title: "Upload", better: "high", value: r => r.t ? median(r.t.up) : NaN, enough: r => r.t && r.t.testsOk >= 3,
+  { title: "Upload", better: "high", value: r => r.t ? median(r.t.up) : NaN, show: v => fmt(v, 1), enough: r => r.t && r.t.testsOk >= 3,
     cell: r => r.t && r.t.testsOk ? fmt(median(r.t.up), 1) + " Mbps" : "–" },
-  { title: "Latency", better: "low", value: r => r.t ? median(r.t.latency) : NaN, enough: r => r.t && r.t.testsOk >= 3,
+  { title: "Latency", better: "low", value: r => r.t ? median(r.t.latency) : NaN, show: v => fmt(v), enough: r => r.t && r.t.testsOk >= 3,
     cell: r => r.t && r.t.testsOk ? fmt(median(r.t.latency)) + " ms" : "–" },
   { title: "Speed tests", value: r => NaN,
     cell: r => r.t && r.t.tests ? `${r.t.testsOk} of ${r.t.tests} OK` : "–" },
@@ -561,7 +614,7 @@ function render(data) {
   document.getElementById("loaded").innerHTML =
     `<strong>${esc(households.join(", ") || "Household")}</strong>: ${data.devices.length} phone${data.devices.length === 1 ? "" : "s"}, ` +
     `${day(first)} to ${day(last)}, ${NETS.length} network${NETS.length === 1 ? "" : "s"}, ${places.length} place${places.length === 1 ? "" : "s"}.` +
-    `<div class="chips" style="margin-top:8px">${data.devices.map(d => `<span class="chip">${esc(d.member)} · ${d.rows.toLocaleString()} readings</span>`).join("")}</div>` +
+    `<div class="chips" style="margin-top:8px">${data.devices.map(d => `<span class="chip">${esc(who(d.member))} · ${d.rows.toLocaleString()} readings</span>`).join("")}</div>` +
     (households.length > 1 ? `<p class="err small">These exports come from more than one household.</p>` : "");
 
   document.getElementById("glance").innerHTML =
@@ -611,9 +664,14 @@ function render(data) {
   }
   const serverRows = NETS.map(n => ({ key: n.key, s: tests.get("all|" + n.key) })).filter(r => r.s && r.s.server);
   if (serverRows.length) {
-    t += `<h3>Reaching your server</h3><table><thead><tr><th>Network</th><th>Reached</th><th>Typical latency</th></tr></thead><tbody>` +
+    const paths = serverRows.some(r => r.s.pathKnown);
+    t += `<h3>Reaching your server</h3><p class="small muted">Off Wi-Fi only.</p><table><thead><tr><th>Network</th><th>Reached</th><th>Typical latency</th>` +
+      (paths ? `<th>Direct path</th>` : "") + `</tr></thead><tbody>` +
       serverRows.map(r => `<tr><td>${netCell(r.key)}</td><td class="num">${bar(r.s.serverOk / r.s.server, r.key, pct(r.s.serverOk / r.s.server))} <span class="few">of ${r.s.server}</span></td>` +
-        `<td class="num">${fmt(median(r.s.serverLatency))} ms</td></tr>`).join("") + "</tbody></table>";
+        `<td class="num">${fmt(median(r.s.serverLatency))} ms</td>` +
+        (paths ? `<td class="num">${r.s.pathKnown ? pct(r.s.direct / r.s.pathKnown) + ` <span class="few">of ${r.s.pathKnown}</span>` : "–"}</td>` : "") +
+        `</tr>`).join("") + "</tbody></table>" +
+      (paths ? `<p class="small muted">Direct path: the server reached the phone without a relay at the end of the test.</p>` : "");
   }
   document.getElementById("tests").innerHTML = t || `<p class="muted">No test texts, taps or server tests in these exports.</p>`;
 
@@ -657,7 +715,7 @@ async function loadFiles(list) {
   }
   status.innerHTML = `✓ Read ${data.devices.length} export${data.devices.length === 1 ? "" : "s"}.` +
     (problems.length ? ` <span class="err">✗ ${esc(problems.join(" · "))}</span>` : "");
-  render(data);
+  render(finishLoad(data));
   document.getElementById("report").scrollIntoView({ behavior: "smooth" });
 }
 
@@ -739,7 +797,115 @@ document.getElementById("demo").addEventListener("click", () => {
   render(demoData());
   document.getElementById("report").scrollIntoView({ behavior: "smooth" });
 });
-if (location.search.includes("demo")) document.getElementById("demo").click();
+
+// ---------------------------------------------------------------------------------------------------------------
+// Live mode: served by a household server, the page reads the phones' uploads from it instead of chosen files.
+// The server sends each phone's data as the same zip a phone exports; a phone is fetched again only when it has
+// uploaded since. The password unlocks this browser tab for 12 hours (the token lives in sessionStorage).
+// ---------------------------------------------------------------------------------------------------------------
+
+const LIVE = window.FC_LIVE_API || null;
+const live = {
+  token: null, zips: new Map(), timer: null, lastCheck: 0, busy: false,
+  el: id => document.getElementById(id),
+};
+try { live.token = sessionStorage.getItem("fc-report-token"); } catch (e) { /* storage blocked: log in each visit */ }
+
+function liveShow(loggedIn) {
+  live.el("loginForm").classList.toggle("hidden", loggedIn);
+  live.el("liveBar").classList.toggle("hidden", !loggedIn);
+  if (!loggedIn) setTimeout(() => live.el("password").focus(), 0);
+}
+
+function liveForget(message) {
+  live.token = null;
+  try { sessionStorage.removeItem("fc-report-token"); } catch (e) { /* nothing stored */ }
+  clearInterval(live.timer);
+  live.el("liveError").textContent = message || "";
+  liveShow(false);
+}
+
+async function liveApi(path) {
+  const r = await fetch(LIVE + path, { headers: { Authorization: "Bearer " + live.token }, cache: "no-store" });
+  if (r.status === 401) { liveForget("The unlock has ended: enter the password again."); throw new Error("locked"); }
+  if (!r.ok) throw new Error(`the server answered ${r.status}`);
+  return r;
+}
+
+const ago = s => s < 90 ? "just now" : s < 5400 ? Math.round(s / 60) + " min ago" : s < 172800 ? Math.round(s / 3600) + " h ago" : Math.round(s / 86400) + " days ago";
+
+async function liveRefresh() {
+  if (live.busy || !live.token) return;
+  live.busy = true;
+  live.lastCheck = Date.now();
+  try {
+    const list = await (await liveApi("/devices")).json();
+    let changed = !live.rendered;
+    for (const d of list.devices) {
+      const have = live.zips.get(d.id);
+      if (have && have.version === d.version) { have.meta = d; continue; }
+      live.el("liveStatus").textContent = `Fetching ${who(d.member)}'s readings…`;
+      const blob = await (await liveApi("/zip/" + encodeURIComponent(d.id))).blob();
+      live.zips.set(d.id, { version: d.version, files: await readZip(blob), meta: d });
+      changed = true;
+    }
+    for (const id of [...live.zips.keys()]) if (!list.devices.some(d => d.id === id)) { live.zips.delete(id); changed = true; }
+    if (changed && live.zips.size) {
+      const data = emptyData();
+      for (const [id, z] of live.zips) await loadExport(data, id, z.files);
+      render(finishLoad(data));
+      live.rendered = true;
+    }
+    const now = Date.now() / 1000;
+    const phones = list.devices.map(d => `${who(d.member)} uploaded ${d.last_upload_epoch ? ago(now - d.last_upload_epoch) : "never"}`);
+    live.el("liveStatus").innerHTML = `<span class="ok">● Live</span> · checked ${new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}` +
+      (phones.length ? ` · ${esc(phones.join(" · "))}` : " · no phone has uploaded yet");
+    live.el("liveError").textContent = "";
+  } catch (e) {
+    if (e.message !== "locked") live.el("liveError").textContent = "✗ Couldn't refresh: " + (e.message || e);
+  } finally {
+    live.busy = false;
+  }
+}
+
+function liveStart() {
+  liveShow(true);
+  clearInterval(live.timer);
+  live.timer = setInterval(() => { if (!document.hidden) liveRefresh(); }, 5 * 60 * 1000);
+  liveRefresh();
+}
+
+if (LIVE) {
+  document.getElementById("drop").classList.add("hidden");
+  live.el("intro").textContent = "Your household's phones, as they last uploaded, compared network by network. The page only " +
+    "reads: it changes nothing on the server or the phones.";
+  live.el("live").classList.remove("hidden");
+  live.el("loginForm").addEventListener("submit", async e => {
+    e.preventDefault();
+    live.el("liveError").textContent = "";
+    try {
+      const r = await fetch(LIVE + "/login", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ password: live.el("password").value }),
+      });
+      const body = await r.json().catch(() => ({}));
+      if (!r.ok) { live.el("liveError").textContent = "✗ " + (body.error || `The server answered ${r.status}.`); return; }
+      live.token = body.token;
+      try { sessionStorage.setItem("fc-report-token", live.token); } catch (err) { /* this visit only */ }
+      live.el("password").value = "";
+      liveStart();
+    } catch (err) {
+      live.el("liveError").textContent = "✗ The server didn't answer.";
+    }
+  });
+  live.el("refresh").addEventListener("click", liveRefresh);
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden && live.token && Date.now() - live.lastCheck > 5 * 60 * 1000) liveRefresh();
+  });
+  if (live.token) liveStart(); else liveShow(false);
+} else if (location.search.includes("demo")) {
+  document.getElementById("demo").click();
+}
 </script>
 </body>
 </html>

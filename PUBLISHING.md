@@ -15,8 +15,11 @@ For maintainers. Three channels, one codebase:
       report page at `https://sstangle73.github.io/family-coverage/`, which the app links to.
 - [ ] **Privacy policy:** add a Family Coverage section to `storiedev.com/privacy` (the storiedev-web repository),
       from [docs/privacy.md](docs/privacy.md). The app's About links there, and so will the Play listing.
-- [ ] **Signing key:** make the release key (kept in Bitwarden, like the StorieDev apps' keys) and put it in the
-      release workflow's secrets. Never fall back to the debug key: a release signed with it can't be updated.
+- [ ] **Signing key**, after the repository is public (GitHub's free plan has an environment's approval step only on
+      public repositories). Run `pwsh -NoProfile -File tool\New-SigningKey.ps1`: it makes the key (or reuses it) in
+      Bitwarden, sets up the `release` environment (your approval, `v*` tags only) with the key as its secrets, and
+      pins the certificate's SHA-256 in `.github/workflows/release.yml`. Commit the pin. There's no fallback to the
+      debug key: a release signed with it couldn't be updated.
 - [ ] **Screenshots** for `fastlane/metadata/android/en-US/images/phoneScreenshots/` (F-Droid) and the Play listing.
       Use a made-up household, never real places.
 - [ ] Test on at least one Pixel and one Samsung, dual-SIM, for a week.
@@ -25,9 +28,11 @@ For maintainers. Three channels, one codebase:
 
 1. Bump `fc.versionCode` (by one) and `fc.versionName` in `gradle.properties`.
 2. Add `fastlane/metadata/android/en-US/changelogs/<versionCode>.txt` (under 500 characters).
-3. Commit, tag `v<versionName>`, push the tag to both remotes.
-4. GitHub release: attach the signed `full` APK and its SHA-256.
-5. Google Play: upload the signed `play` AAB to the testing track first.
+3. Commit, tag `v<versionName>`, and push the tag to both remotes.
+4. The **Release** workflow waits for your approval (GitHub's Actions tab, or its app). It then checks the tag against
+   `gradle.properties`, runs the tests, signs, refuses any signer but the pinned one, and drafts a GitHub release with
+   the `full` APK and `SHA256SUMS`. Read the draft, then publish it.
+5. Google Play: the signed `play` bundle is the run's `play-bundle` artifact. Upload it to the testing track first.
 
 ## F-Droid
 

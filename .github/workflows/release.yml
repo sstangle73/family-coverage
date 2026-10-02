@@ -1,0 +1,71 @@
+name: Release
+
+# A version tag (v0.1.0) builds, signs and drafts a GitHub release. The job runs in the "release" environment, so it
+# waits for the maintainer's approval before it can touch the signing key. Publishing the draft is a last manual step.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: write # the draft release
+    timeout-minutes: 30
+    env:
+      # The release certificate's SHA-256, pinned by tool/New-SigningKey.ps1. Any other signer stops the release.
+      FC_CERT_SHA256: "not-set-yet"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Android SDK platform 36
+        run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-36" > /dev/null
+      - name: The tag matches gradle.properties
+        run: |
+          name=$(sed -n 's/^fc.versionName=//p' gradle.properties | tr -d '\r')
+          [ "v$name" = "$GITHUB_REF_NAME" ] || { echo "The tag is $GITHUB_REF_NAME but gradle.properties says $name." >&2; exit 1; }
+          [ "$FC_CERT_SHA256" != "not-set-yet" ] || { echo "No pinned certificate: run tool/New-SigningKey.ps1 first." >&2; exit 1; }
+      - name: Build, test and sign
+        env:
+          KEYSTORE_B64: ${{ secrets.FC_KEYSTORE_B64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.FC_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.FC_KEY_ALIAS }}
+        run: |
+          printf '%s' "$KEYSTORE_B64" | tr -d '\r\n ' | base64 -d > "$RUNNER_TEMP/release.p12"
+          export FC_KEYSTORE_FILE="$RUNNER_TEMP/release.p12"
+          export FC_KEYSTORE_PASSWORD="$(printf '%s' "$KEYSTORE_PASSWORD" | tr -d '\r\n')"
+          export FC_KEY_ALIAS="$(printf '%s' "$KEY_ALIAS" | tr -d '\r\n')"
+          ./gradlew --no-daemon testFullReleaseUnitTest testPlayReleaseUnitTest assembleFullRelease bundlePlayRelease
+      - name: Forget the key
+        if: always()
+        run: rm -f "$RUNNER_TEMP/release.p12"
+      - name: Check the signer
+        run: |
+          APKSIGNER=$(ls -d "$ANDROID_HOME"/build-tools/*/apksigner | sort -V | tail -1)
+          APK=app/build/outputs/apk/full/release/app-full-release.apk
+          got=$("$APKSIGNER" verify --print-certs "$APK" | sed -n 's/.*certificate SHA-256 digest: \([0-9a-f]*\).*/\1/p' | head -1)
+          [ "$got" = "$FC_CERT_SHA256" ] || { echo "Signed by $got, expected $FC_CERT_SHA256." >&2; exit 1; }
+          name="family-coverage-${GITHUB_REF_NAME#v}.apk"
+          cp "$APK" "$name"
+          sha256sum "$name" > SHA256SUMS
+      - name: Draft the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          code=$(sed -n 's/^fc.versionCode=//p' gradle.properties | tr -d '\r')
+          gh release create "$GITHUB_REF_NAME" family-coverage-*.apk SHA256SUMS --draft \
+            --title "Family Coverage ${GITHUB_REF_NAME#v}" --notes-file "fastlane/metadata/android/en-US/changelogs/$code.txt"
+      - name: Keep the Play bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: play-bundle
+          path: app/build/outputs/bundle/playRelease/*.aab
+          retention-days: 30

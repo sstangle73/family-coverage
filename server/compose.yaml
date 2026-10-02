@@ -1,0 +1,18 @@
+# docker compose up -d --build   (from this folder)
+# Then: docker compose exec familycoverage python /app/familycoverage_server.py list
+services:
+  familycoverage:
+    build: .
+    container_name: familycoverage
+    restart: unless-stopped
+    ports:
+      - "8745:8745"
+    volumes:
+      - ./data:/data
+    environment:
+      # Only phones from your household may register (its id is in each phone's status once a server is set).
+      # FC_HOUSEHOLD: "0a1b2c3d"
+      # Who may read /healthz and /metrics (default: private networks only).
+      # FC_OPEN_ALLOW: "10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,127.0.0.0/8"
+      TZ: UTC
+    mem_limit: 128m

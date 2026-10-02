@@ -1,0 +1,5 @@
+title: Family Coverage
+description: Which mobile network works where your family actually goes? Compare carriers place by place, with your own phones.
+# GitHub Pages builds this folder with Jekyll. report/index.html has no front matter, so it's served as it is.
+exclude:
+  - fdroid

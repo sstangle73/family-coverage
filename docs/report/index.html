@@ -1,0 +1,745 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Family Coverage report</title>
+<meta name="description" content="Compare mobile networks place by place from Family Coverage exports. Runs entirely in your browser.">
+<style>
+  :root {
+    --bg: #fbfbfa; --panel: #ffffff; --ink: #1d1f23; --muted: #5b616b; --line: #dfe2e6; --soft: #f1f3f5;
+    --accent: #0b5cad; --best: #7a4d00; --bar-bg: #e8ebef;
+    /* Okabe-Ito: distinct for every common colour-vision type; each network also gets a glyph. */
+    --n0: #0072B2; --n1: #E69F00; --n2: #CC79A7; --n3: #009E73; --n4: #56B4E9; --n5: #D55E00; --n6: #F0E442;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #15171a; --panel: #1d2024; --ink: #e8eaed; --muted: #a3a9b2; --line: #33383f; --soft: #252a30;
+      --accent: #7fb4ff; --best: #ffd27a; --bar-bg: #2c3138;
+      --n0: #4aa3e8; --n1: #f0b030; --n2: #e09ac4; --n3: #2fbf95; --n4: #8fd0f5; --n5: #f07a3a; --n6: #f3e85a;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #15171a; --panel: #1d2024; --ink: #e8eaed; --muted: #a3a9b2; --line: #33383f; --soft: #252a30;
+    --accent: #7fb4ff; --best: #ffd27a; --bar-bg: #2c3138;
+    --n0: #4aa3e8; --n1: #f0b030; --n2: #e09ac4; --n3: #2fbf95; --n4: #8fd0f5; --n5: #f07a3a; --n6: #f3e85a;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  main { max-width: 1100px; margin: 0 auto; padding: 24px 16px 64px; }
+  h1 { font-size: 1.7rem; margin: 0 0 4px; }
+  h2 { font-size: 1.25rem; margin: 36px 0 8px; }
+  h3 { font-size: 1.05rem; margin: 24px 0 6px; }
+  p { margin: 6px 0; }
+  .muted { color: var(--muted); }
+  .small { font-size: 0.86rem; }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 16px; margin: 12px 0; }
+  .drop { border: 2px dashed var(--line); border-radius: 10px; padding: 28px 16px; text-align: center; background: var(--panel); }
+  .drop.over { border-color: var(--accent); }
+  button, .button { font: inherit; border: 1px solid var(--line); background: var(--soft); color: var(--ink); border-radius: 8px; padding: 8px 14px; cursor: pointer; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  :root[data-theme="dark"] button.primary { color: #10151c; }
+  @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) button.primary { color: #10151c; } }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; justify-content: center; margin-top: 10px; }
+  .scroll { overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; font-size: 0.92rem; }
+  th, td { text-align: left; padding: 7px 8px; border-bottom: 1px solid var(--line); vertical-align: middle; white-space: nowrap; }
+  th { font-weight: 600; color: var(--muted); font-size: 0.82rem; }
+  td.num { font-variant-numeric: tabular-nums; }
+  .net { font-weight: 600; }
+  .glyph { display: inline-block; width: 1.2em; text-align: center; }
+  .bar { display: inline-flex; align-items: center; gap: 6px; }
+  .bar span.track { display: inline-block; width: 80px; height: 9px; background: var(--bar-bg); border-radius: 5px; overflow: hidden; }
+  .bar span.fill { display: block; height: 100%; }
+  .best { color: var(--best); font-weight: 700; font-size: 0.78rem; margin-left: 4px; }
+  .few { color: var(--muted); font-size: 0.78rem; }
+  .err { color: var(--n5); }
+  .chips { display: flex; gap: 6px; flex-wrap: wrap; }
+  .chip { border: 1px solid var(--line); border-radius: 999px; padding: 2px 10px; font-size: 0.85rem; background: var(--panel); }
+  footer { margin-top: 48px; font-size: 0.85rem; color: var(--muted); }
+  a { color: var(--accent); }
+  .hidden { display: none; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Family Coverage report</h1>
+  <p class="muted">Pick the export from every phone in your household. The files are read here, in your browser:
+    nothing is uploaded, and nothing is kept after you close the page.</p>
+
+  <div id="drop" class="drop">
+    <p><strong>Drop the export zips here</strong>, or</p>
+    <div class="row">
+      <label class="button primary" for="files">Choose files</label>
+      <input id="files" type="file" accept=".zip,application/zip" multiple class="hidden">
+      <button id="demo" type="button">See an example with made-up data</button>
+    </div>
+    <p id="loadStatus" class="small muted" aria-live="polite"></p>
+  </div>
+
+  <div id="report" class="hidden">
+    <section id="loaded" class="panel"></section>
+
+    <h2>Networks at a glance</h2>
+    <p class="muted small">Every phone, every place, the whole period. Time is weighted, so an hour parked counts
+      the same as an hour driving. ▲ marks the best network in each column.</p>
+    <div class="panel scroll" id="glance"></div>
+
+    <h2>At your places</h2>
+    <p class="muted small">Inside each place's circle. The places come from the phones' household settings.</p>
+    <div id="places"></div>
+
+    <h2>On the move and elsewhere</h2>
+    <div id="elsewhere"></div>
+
+    <h2>Dead spots</h2>
+    <p class="muted small">Spots about 100 m across where a network had no service for at least two minutes, worst
+      first. "Map" opens OpenStreetMap in a new tab: that's the only thing on this page that goes online.</p>
+    <div class="panel scroll" id="dead"></div>
+
+    <h2>Tests</h2>
+    <div class="panel scroll" id="tests"></div>
+
+    <h2>Mobile data use</h2>
+    <div class="panel scroll" id="usage"></div>
+
+    <footer id="notes"></footer>
+  </div>
+</main>
+<script>
+"use strict";
+
+// ---------------------------------------------------------------------------------------------------------------
+// Reading the exports: zip (central directory + DecompressionStream), then CSV.
+// ---------------------------------------------------------------------------------------------------------------
+
+async function readZip(blob) {
+  const buf = new Uint8Array(await blob.arrayBuffer());
+  const dv = new DataView(buf.buffer);
+  let eocd = -1;
+  for (let i = buf.length - 22; i >= Math.max(0, buf.length - 65557); i--) {
+    if (dv.getUint32(i, true) === 0x06054b50) { eocd = i; break; }
+  }
+  if (eocd < 0) throw new Error("not a zip file");
+  const count = dv.getUint16(eocd + 10, true);
+  let p = dv.getUint32(eocd + 16, true);
+  const files = new Map();
+  for (let n = 0; n < count; n++) {
+    if (dv.getUint32(p, true) !== 0x02014b50) throw new Error("damaged zip");
+    const method = dv.getUint16(p + 10, true);
+    const csize = dv.getUint32(p + 20, true);
+    const nameLen = dv.getUint16(p + 28, true), extraLen = dv.getUint16(p + 30, true), commentLen = dv.getUint16(p + 32, true);
+    const local = dv.getUint32(p + 42, true);
+    const name = new TextDecoder().decode(buf.subarray(p + 46, p + 46 + nameLen));
+    p += 46 + nameLen + extraLen + commentLen;
+    if (name.endsWith("/")) continue;
+    const start = local + 30 + dv.getUint16(local + 26, true) + dv.getUint16(local + 28, true);
+    const raw = buf.subarray(start, start + csize);
+    files.set(name, async () => {
+      if (method === 0) return new TextDecoder().decode(raw);
+      if (method !== 8) throw new Error("unsupported compression in " + name);
+      const stream = new Blob([raw]).stream().pipeThrough(new DecompressionStream("deflate-raw"));
+      return await new Response(stream).text();
+    });
+  }
+  return files;
+}
+
+/** RFC 4180 rows: quoted fields may hold commas, quotes ("") and newlines. Calls onRow(fields) per data row. */
+function parseCsv(text, onHeader, onRow) {
+  let i = 0, field = "", row = [], quoted = false, header = null;
+  const n = text.length;
+  const endRow = () => {
+    row.push(field); field = "";
+    if (!header) { header = row; onHeader(header); } else if (row.length > 1 || row[0] !== "") onRow(row);
+    row = [];
+  };
+  while (i < n) {
+    const c = text.charCodeAt(i);
+    if (quoted) {
+      if (c === 34) {
+        if (text.charCodeAt(i + 1) === 34) { field += '"'; i += 2; continue; }
+        quoted = false; i++; continue;
+      }
+      field += text[i]; i++; continue;
+    }
+    if (c === 34) { quoted = true; i++; continue; }
+    if (c === 44) { row.push(field); field = ""; i++; continue; }
+    if (c === 10 || c === 13) {
+      endRow();
+      if (c === 13 && text.charCodeAt(i + 1) === 10) i++;
+      i++; continue;
+    }
+    // Fast path: copy a run of plain characters at once.
+    let j = i;
+    while (j < n) { const d = text.charCodeAt(j); if (d === 44 || d === 34 || d === 10 || d === 13) break; j++; }
+    field += text.slice(i, j); i = j;
+  }
+  if (field !== "" || row.length) endRow();
+}
+
+const num = s => (s === "" || s == null) ? NaN : +s;
+const tsMs = s => Date.parse(s);
+
+// ---------------------------------------------------------------------------------------------------------------
+// The data, held compactly: samples column by column (they're most of it), the small tables as objects.
+// ---------------------------------------------------------------------------------------------------------------
+
+function emptyData() {
+  return {
+    devices: [],
+    samples: { ts: [], dev: [], sub: [], net: [], svc: [], nr: [], rsrp: [], lat: [], lon: [], acc: [], spd: [], wifi: [] },
+    checks: [], tests: [], server: [], texts: [], events: [], usage: [],
+    nets: new Map(),      // key -> { key, label, counts: Map(label -> n) }
+  };
+}
+
+function netKey(carrier, mccMnc) {
+  const c = (carrier || "").trim();
+  if (!c) return mccMnc ? "plmn " + mccMnc : "unknown";
+  return c.toLowerCase().replace(/[^a-z0-9&]+/g, " ").replace(/\b(wireless|usa|inc|llc|mobile network)\b/g, "").trim() || c.toLowerCase();
+}
+
+function noteNet(data, carrier, mccMnc) {
+  const key = netKey(carrier, mccMnc);
+  let n = data.nets.get(key);
+  if (!n) { n = { key, counts: new Map() }; data.nets.set(key, n); }
+  const label = (carrier || "").trim() || (mccMnc ? "Network " + mccMnc : "Unknown network");
+  n.counts.set(label, (n.counts.get(label) || 0) + 1);
+  return key;
+}
+
+const SVC = { IN_SERVICE: 1, OUT_OF_SERVICE: 2, EMERGENCY_ONLY: 2, POWER_OFF: 0 };
+
+async function loadExport(data, name, files) {
+  const mf = files.get("manifest.json");
+  if (!mf) throw new Error(name + " has no manifest.json: is it a Family Coverage export?");
+  const manifest = JSON.parse(await mf());
+  if (manifest.format !== "family-coverage-export") throw new Error(name + " isn't a Family Coverage export");
+  const dev = data.devices.length;
+  const device = { member: manifest.member || "?", deviceId: manifest.device_id || name, household: manifest.household || {},
+    appVersion: manifest.app_version || "", flavor: manifest.flavor || "", file: name, first: Infinity, last: -Infinity, rows: 0 };
+  if (data.devices.some(d => d.deviceId === device.deviceId && d.deviceId !== name)) {
+    throw new Error(name + " is a second export of the same phone (" + device.member + "): choose only the newest");
+  }
+  data.devices.push(device);
+  const names = [...files.keys()].filter(f => /^csv\/[a-z]+-\d{4}-\d{2}-\d{2}\.csv$/.test(f)).sort();
+  for (const f of names) {
+    const table = f.slice(4).split("-")[0];
+    const text = await files.get(f)();
+    let h = {};
+    const col = k => h[k] ?? -1;
+    if (table === "samples") {
+      const S = data.samples;
+      parseCsv(text, hd => { h = Object.fromEntries(hd.map((k, i) => [k, i])); }, r => {
+        const t = tsMs(r[col("ts")]);
+        if (!isFinite(t)) return;
+        S.ts.push(t); S.dev.push(dev); S.sub.push(+r[col("sub_id")] || 0);
+        S.net.push(noteNet(data, r[col("carrier")], r[col("mcc_mnc")]));
+        S.svc.push(SVC[r[col("service_state")]] ?? 2);
+        const rat = r[col("rat")];
+        S.nr.push(rat === "NR_SA" || rat === "NR_NSA" ? 1 : 0);
+        S.rsrp.push(num(r[col("rsrp")])); S.lat.push(num(r[col("lat")])); S.lon.push(num(r[col("lon")]));
+        S.acc.push(num(r[col("accuracy_m")])); S.spd.push(num(r[col("speed_mps")]));
+        S.wifi.push(r[col("wifi_connected")] === "true" ? 1 : 0);
+        device.first = Math.min(device.first, t); device.last = Math.max(device.last, t); device.rows++;
+      });
+    } else if (["checks", "tests", "server", "texts", "events", "usage"].includes(table)) {
+      const out = data[table];
+      parseCsv(text, hd => { h = hd; }, r => {
+        const o = { dev };
+        for (let i = 0; i < h.length; i++) o[h[i]] = r[i] ?? "";
+        o.t = tsMs(o.ts);
+        if (!isFinite(o.t)) return;
+        if (o.carrier !== undefined && table !== "events") o.net = noteNet(data, o.carrier, o.mcc_mnc);
+        out.push(o);
+      });
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// The sums.
+// ---------------------------------------------------------------------------------------------------------------
+
+const R = 6371000, rad = Math.PI / 180;
+function distanceM(lat1, lon1, lat2, lon2) {
+  const dLat = (lat2 - lat1) * rad, dLon = (lon2 - lon1) * rad;
+  const a = Math.sin(dLat / 2) ** 2 + Math.cos(lat1 * rad) * Math.cos(lat2 * rad) * Math.sin(dLon / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(a));
+}
+
+function weightedMedian(pairs) {
+  if (!pairs.length) return NaN;
+  pairs.sort((a, b) => a[0] - b[0]);
+  const total = pairs.reduce((s, p) => s + p[1], 0);
+  let acc = 0;
+  for (const [v, w] of pairs) { acc += w; if (acc >= total / 2) return v; }
+  return pairs[pairs.length - 1][0];
+}
+
+function median(xs) {
+  const s = xs.filter(x => isFinite(x)).sort((a, b) => a - b);
+  if (!s.length) return NaN;
+  const m = s.length >> 1;
+  return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
+}
+
+/** The household's places, from every export's manifest (first definition of each id wins). */
+function allPlaces(data) {
+  const out = new Map();
+  for (const d of data.devices) for (const p of (d.household.places || [])) {
+    if (!out.has(p.id) && isFinite(p.lat) && isFinite(p.lon)) out.set(p.id, { id: p.id, name: p.name || p.id, lat: p.lat, lon: p.lon, r: p.r || 150 });
+  }
+  return [...out.values()];
+}
+
+/** Which place a fix is in (with some slack for the fix's own error, like the app), or null. */
+function placeOf(places, lat, lon, acc) {
+  if (!isFinite(lat) || !isFinite(lon)) return null;
+  for (const p of places) {
+    if (distanceM(lat, lon, p.lat, p.lon) <= p.r + Math.min(isFinite(acc) ? acc : 50, 50)) return p.id;
+  }
+  return null;
+}
+
+/**
+ * Per network and per bucket (all, each place, moving, elsewhere): time with and without service, signal, 5G.
+ * Each sample stands for the time until the same SIM's next sample, capped at 5 minutes.
+ */
+function coverage(data, places) {
+  const S = data.samples, n = S.ts.length;
+  const order = Array.from({ length: n }, (_, i) => i);
+  order.sort((a, b) => (S.dev[a] - S.dev[b]) || (S.sub[a] - S.sub[b]) || (S.ts[a] - S.ts[b]));
+  const buckets = new Map(); // "bucket|net" -> stats
+  const get = (b, net) => {
+    const k = b + "|" + net;
+    let s = buckets.get(k);
+    if (!s) { s = { up: 0, down: 0, nr: 0, rsrp: [], weak: 0, sig: 0 }; buckets.set(k, s); }
+    return s;
+  };
+  const dead = new Map(); // grid cell -> { lat, lon, nets: Map(net -> down seconds) }
+  for (let k = 0; k < n; k++) {
+    const i = order[k], j = order[k + 1];
+    const same = j !== undefined && S.dev[j] === S.dev[i] && S.sub[j] === S.sub[i];
+    const w = Math.min(same ? (S.ts[j] - S.ts[i]) / 1000 : 120, 300);
+    if (!(w > 0) || S.svc[i] === 0) continue; // airplane mode or a duplicate time: not coverage
+    const net = S.net[i];
+    const place = placeOf(places, S.lat[i], S.lon[i], S.acc[i]);
+    const where = place ? "place:" + place : (S.spd[i] >= 2 ? "moving" : (isFinite(S.lat[i]) ? "elsewhere" : null));
+    for (const b of where ? ["all", where] : ["all"]) {
+      const s = get(b, net);
+      if (S.svc[i] === 1) {
+        s.up += w;
+        if (S.nr[i]) s.nr += w;
+        if (isFinite(S.rsrp[i])) { s.rsrp.push([S.rsrp[i], w]); s.sig += w; if (S.rsrp[i] < -110) s.weak += w; }
+      } else {
+        s.down += w;
+      }
+    }
+    if (S.svc[i] !== 1 && isFinite(S.lat[i])) {
+      // Places count as one spot each; elsewhere, a grid of about 100 m.
+      const lat = Math.round(S.lat[i] * 1000) / 1000, lon = Math.round(S.lon[i] * 1000) / 1000;
+      const cell = place ? "place:" + place : lat.toFixed(3) + "," + lon.toFixed(3);
+      let c = dead.get(cell);
+      if (!c) { c = { lat, lon, nets: new Map(), readings: new Map(), place }; dead.set(cell, c); }
+      c.nets.set(net, (c.nets.get(net) || 0) + w);
+      c.readings.set(net, (c.readings.get(net) || 0) + 1);
+    }
+  }
+  for (const s of buckets.values()) s.rsrpMedian = weightedMedian(s.rsrp);
+  return { buckets, dead };
+}
+
+/** Data checks and tests per network and bucket. */
+function tallyTests(data, places) {
+  const out = new Map();
+  const get = (b, net) => {
+    const k = b + "|" + net;
+    let s = out.get(k);
+    if (!s) { s = { checks: 0, checksOk: 0, connect: [], tests: 0, testsOk: 0, down: [], up: [], latency: [], server: 0, serverOk: 0, serverLatency: [] }; out.set(k, s); }
+    return s;
+  };
+  const where = r => {
+    const p = placeOf(places, num(r.lat), num(r.lon), num(r.accuracy_m));
+    return p ? ["all", "place:" + p] : ["all"];
+  };
+  for (const r of data.checks) {
+    if (!r.net) continue;
+    for (const b of where(r)) {
+      const s = get(b, r.net); s.checks++;
+      if (r.result === "OK") { s.checksOk++; s.connect.push(num(r.connect_ms)); }
+    }
+  }
+  for (const r of data.tests) {
+    if (!r.net || r.result === "VPN_BLOCKED") continue; // a VPN in the way says nothing about the network
+    for (const b of where(r)) {
+      const s = get(b, r.net); s.tests++;
+      if (r.result === "OK") { s.testsOk++; s.down.push(num(r.down_mbps)); s.up.push(num(r.up_mbps)); s.latency.push(num(r.latency_ms)); }
+    }
+  }
+  for (const r of data.server) {
+    if (!r.net || r.wifi_connected === "true") continue;
+    for (const b of where(r)) {
+      const s = get(b, r.net); s.server++;
+      if (r.result === "OK") { s.serverOk++; s.serverLatency.push(num(r.latency_ms)); }
+    }
+  }
+  return out;
+}
+
+/** Test texts: did each test reach the other phone, by the sending SIM's network; latency by the receiving one's. */
+function tallyTexts(data) {
+  const members = new Set(data.devices.map(d => d.member));
+  const byId = new Map();
+  for (const r of data.texts) {
+    if (!r.test_id) continue;
+    let e = byId.get(r.test_id);
+    if (!e) { e = { sent: null, received: null, echo: null }; byId.set(r.test_id, e); }
+    const member = data.devices[r.dev].member;
+    if (r.role === "test" && r.event === "sent") e.sent = { ...r, member };
+    if (r.role === "test" && r.event === "received") e.received = { ...r, member };
+    if (r.role === "echo" && r.event === "received") e.echo = { ...r, member };
+  }
+  const from = new Map(), to = new Map();
+  for (const e of byId.values()) {
+    if (!e.sent || !e.sent.net || !members.has(e.sent.peer)) continue; // the partner's export isn't loaded
+    if (e.sent.result === "APP_ERROR") continue; // refused by the phone itself, not the network
+    const s = from.get(e.sent.net) || { sent: 0, reached: 0, back: 0, latency: [] };
+    s.sent++;
+    if (e.received) { s.reached++; s.latency.push(num(e.received.latency_s)); }
+    if (e.echo) s.back++;
+    from.set(e.sent.net, s);
+    if (e.received && e.received.net) {
+      const t = to.get(e.received.net) || { arrived: 0, latency: [] };
+      t.arrived++; t.latency.push(num(e.received.latency_s));
+      to.set(e.received.net, t);
+    }
+  }
+  const composed = data.texts.filter(r => r.event === "composed").length;
+  return { from, to, composed };
+}
+
+/** Call and text taps by the network of the SIM that was called, with each member's "undo" taken off. */
+function tallyTaps(data) {
+  const out = new Map();
+  const byDev = new Map();
+  for (const r of data.events) { if (!byDev.has(r.dev)) byDev.set(r.dev, []); byDev.get(r.dev).push(r); }
+  for (const rows of byDev.values()) {
+    rows.sort((a, b) => a.t - b.t);
+    const taps = [];
+    for (const r of rows) {
+      if (r.kind === "UNDO") { taps.pop(); continue; }
+      const last = taps[taps.length - 1];
+      if (last && last.t === r.t && last.kind === r.kind) last.rows.push(r); else taps.push({ t: r.t, kind: r.kind, outcome: r.outcome, rows: [r] });
+    }
+    for (const tap of taps) {
+      const target = tap.rows.find(r => r.sub_id !== "" && r.sub_id === r.target_sub_id) || tap.rows[0];
+      const net = netKey(target.carrier, target.mcc_mnc);
+      if (!data.nets.has(net)) noteNet(data, target.carrier, target.mcc_mnc);
+      const s = out.get(net) || { CALL_IN: [0, 0], TEXT_IN: [0, 0] };
+      if (s[tap.kind]) s[tap.kind][tap.outcome === "REACHED" ? 0 : 1]++;
+      out.set(net, s);
+    }
+  }
+  return out;
+}
+
+function tallyUsage(data) {
+  const out = new Map();
+  for (const r of data.usage) {
+    if (!r.net) continue;
+    const s = out.get(r.net) || { bytes: 0, app: 0, days: new Set(), members: new Set() };
+    s.bytes += (num(r.rx_bytes) || 0) + (num(r.tx_bytes) || 0);
+    s.app += (num(r.app_rx_bytes) || 0) + (num(r.app_tx_bytes) || 0);
+    s.days.add(data.devices[r.dev].member + " " + r.ts.slice(0, 10));
+    s.members.add(data.devices[r.dev].member);
+    out.set(r.net, s);
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Rendering. Every network has a colour AND a glyph; every bar has its number; "▲ best" is a word, not a colour.
+// ---------------------------------------------------------------------------------------------------------------
+
+const GLYPHS = ["■", "▲", "●", "◆", "★", "✚", "⬟"];
+const esc = s => String(s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+// One decimal from 95% up, where the differences that matter live (99.1% vs 98.9% is about 4 hours in three weeks).
+const pct = x => isFinite(x) ? (x >= 1 ? "100" : (x * 100).toFixed(x >= 0.95 ? 1 : 0)) + "%" : "–";
+const fmt = (x, d = 0) => isFinite(x) ? x.toFixed(d) : "–";
+const hours = s => s >= 3600 ? (s / 3600).toFixed(s >= 36000 ? 0 : 1) + " h" : Math.round(s / 60) + " min";
+
+let NETS = []; // [{ key, label, i }]
+
+function netCell(key) {
+  const n = NETS.find(x => x.key === key);
+  if (!n) return esc(key);
+  return `<span class="net"><span class="glyph" style="color:var(--n${n.i % 7})" aria-hidden="true">${GLYPHS[n.i % 7]}</span>${esc(n.label)}</span>`;
+}
+
+function bar(fraction, key, text) {
+  const n = NETS.find(x => x.key === key);
+  const w = isFinite(fraction) ? Math.max(0, Math.min(1, fraction)) * 100 : 0;
+  return `<span class="bar"><span class="track"><span class="fill" style="width:${w}%;background:var(--n${(n ? n.i : 0) % 7})"></span></span>${text}</span>`;
+}
+
+/** A table of networks; each column picks the best row (higher or lower is better) and marks it with a word. */
+function netTable(rows, cols) {
+  const best = cols.map(c => {
+    if (!c.better) return null;
+    let bi = -1, bv = c.better === "high" ? -Infinity : Infinity;
+    rows.forEach((r, i) => {
+      const v = c.value(r);
+      if (!isFinite(v) || (c.enough && !c.enough(r))) return;
+      if (c.better === "high" ? v > bv : v < bv) { bv = v; bi = i; }
+    });
+    const ok = rows.filter(r => isFinite(c.value(r)) && (!c.enough || c.enough(r)));
+    const tied = ok.filter(r => c.value(r) === bv).length > 1; // a tie has no winner
+    return ok.length >= 2 && !tied ? bi : -1;
+  });
+  let html = `<table><thead><tr><th>Network</th>${cols.map(c => `<th>${c.title}</th>`).join("")}</tr></thead><tbody>`;
+  for (const [i, r] of rows.entries()) {
+    html += `<tr><td>${netCell(r.key)}</td>`;
+    cols.forEach((c, ci) => {
+      html += `<td class="num">${c.cell(r)}${best[ci] === i ? '<span class="best">▲ best</span>' : ""}</td>`;
+    });
+    html += "</tr>";
+  }
+  return html + "</tbody></table>";
+}
+
+const coverageCols = [
+  { title: "Time with service", better: "high", value: r => r.cov ? r.cov.up / (r.cov.up + r.cov.down) : NaN,
+    enough: r => r.cov && r.cov.up + r.cov.down >= 1800,
+    cell: r => r.cov && r.cov.up + r.cov.down > 0 ? bar(r.cov.up / (r.cov.up + r.cov.down), r.key, pct(r.cov.up / (r.cov.up + r.cov.down))) +
+      ` <span class="few">of ${hours(r.cov.up + r.cov.down)}</span>` : "–" },
+  { title: "No service", better: "low", value: r => r.cov ? r.cov.down : NaN, enough: r => r.cov && r.cov.up + r.cov.down >= 1800,
+    cell: r => r.cov ? hours(r.cov.down) : "–" },
+  { title: "Typical signal", better: "high", value: r => r.cov ? r.cov.rsrpMedian : NaN,
+    cell: r => r.cov && isFinite(r.cov.rsrpMedian) ? fmt(r.cov.rsrpMedian) + " dBm" : "–" },
+  { title: "Weak (< −110 dBm)", better: "low", value: r => r.cov && r.cov.sig ? r.cov.weak / r.cov.sig : NaN,
+    cell: r => r.cov && r.cov.sig ? pct(r.cov.weak / r.cov.sig) : "–" },
+  { title: "On 5G", better: "high", value: r => r.cov && r.cov.up ? r.cov.nr / r.cov.up : NaN,
+    cell: r => r.cov && r.cov.up ? pct(r.cov.nr / r.cov.up) : "–" },
+];
+
+const testCols = [
+  { title: "Data checks OK", better: "high", value: r => r.t && r.t.checks ? r.t.checksOk / r.t.checks : NaN, enough: r => r.t && r.t.checks >= 10,
+    cell: r => r.t && r.t.checks ? bar(r.t.checksOk / r.t.checks, r.key, pct(r.t.checksOk / r.t.checks)) + ` <span class="few">of ${r.t.checks}</span>` : "–" },
+  { title: "Download", better: "high", value: r => r.t ? median(r.t.down) : NaN, enough: r => r.t && r.t.testsOk >= 3,
+    cell: r => r.t && r.t.testsOk ? fmt(median(r.t.down), 1) + " Mbps" : "–" },
+  { title: "Upload", better: "high", value: r => r.t ? median(r.t.up) : NaN, enough: r => r.t && r.t.testsOk >= 3,
+    cell: r => r.t && r.t.testsOk ? fmt(median(r.t.up), 1) + " Mbps" : "–" },
+  { title: "Latency", better: "low", value: r => r.t ? median(r.t.latency) : NaN, enough: r => r.t && r.t.testsOk >= 3,
+    cell: r => r.t && r.t.testsOk ? fmt(median(r.t.latency)) + " ms" : "–" },
+  { title: "Speed tests", value: r => NaN,
+    cell: r => r.t && r.t.tests ? `${r.t.testsOk} of ${r.t.tests} OK` : "–" },
+];
+
+function rowsFor(bucket, cov, tests) {
+  return NETS.map(n => ({ key: n.key, cov: cov.buckets.get(bucket + "|" + n.key), t: tests.get(bucket + "|" + n.key) }))
+    .filter(r => (r.cov && r.cov.up + r.cov.down > 0) || (r.t && (r.t.checks || r.t.tests)));
+}
+
+function render(data) {
+  // Networks, most-seen first, each with its most common label.
+  const counts = new Map();
+  for (const k of data.samples.net) counts.set(k, (counts.get(k) || 0) + 1);
+  NETS = [...data.nets.values()].map(n => ({
+    key: n.key, label: [...n.counts.entries()].sort((a, b) => b[1] - a[1])[0][0], seen: counts.get(n.key) || 0,
+  })).sort((a, b) => b.seen - a.seen).map((n, i) => ({ ...n, i }));
+
+  const places = allPlaces(data);
+  const cov = coverage(data, places);
+  const tests = tallyTests(data, places);
+
+  // What's loaded.
+  const households = [...new Set(data.devices.map(d => d.household.name).filter(Boolean))];
+  const first = Math.min(...data.devices.map(d => d.first)), last = Math.max(...data.devices.map(d => d.last));
+  const day = t => isFinite(t) ? new Date(t).toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" }) : "–";
+  document.getElementById("loaded").innerHTML =
+    `<strong>${esc(households.join(", ") || "Household")}</strong>: ${data.devices.length} phone${data.devices.length === 1 ? "" : "s"}, ` +
+    `${day(first)} to ${day(last)}, ${NETS.length} network${NETS.length === 1 ? "" : "s"}, ${places.length} place${places.length === 1 ? "" : "s"}.` +
+    `<div class="chips" style="margin-top:8px">${data.devices.map(d => `<span class="chip">${esc(d.member)} · ${d.rows.toLocaleString()} readings</span>`).join("")}</div>` +
+    (households.length > 1 ? `<p class="err small">These exports come from more than one household.</p>` : "");
+
+  document.getElementById("glance").innerHTML =
+    netTable(rowsFor("all", cov, tests), coverageCols) + "<h3>Data</h3>" + netTable(rowsFor("all", cov, tests), testCols);
+
+  document.getElementById("places").innerHTML = places.length ? places.map(p => {
+    const rows = rowsFor("place:" + p.id, cov, tests);
+    return `<div class="panel scroll"><h3 style="margin-top:0">${esc(p.name)} <span class="muted small">(${p.r} m around)</span></h3>` +
+      (rows.length ? netTable(rows, coverageCols.concat(testCols.slice(0, 2))) : `<p class="muted">No readings here yet.</p>`) + "</div>";
+  }).join("") : `<div class="panel muted">No places: add them in the app (Places → Add the spot you're at), then export again.</div>`;
+
+  document.getElementById("elsewhere").innerHTML = [["moving", "On the move (2 m/s or faster)"], ["elsewhere", "Elsewhere, not moving"]].map(([b, title]) => {
+    const rows = rowsFor(b, cov, tests);
+    return `<div class="panel scroll"><h3 style="margin-top:0">${title}</h3>` +
+      (rows.length ? netTable(rows, coverageCols) : `<p class="muted">No readings.</p>`) + "</div>";
+  }).join("");
+
+  // Dead spots: at least 2 minutes without service on some network, seen in at least two readings (one lone reading
+  // is as likely a blip as a spot).
+  const spots = [...cov.dead.values()].map(c => ({
+    ...c, worst: Math.max(...[...c.nets.entries()].filter(([k]) => c.readings.get(k) >= 2).map(([, v]) => v), 0),
+  })).filter(c => c.worst >= 120).sort((a, b) => b.worst - a.worst).slice(0, 25);
+  document.getElementById("dead").innerHTML = spots.length ? `<table><thead><tr><th>Where</th>${NETS.map(n => `<th>${netCell(n.key)}</th>`).join("")}<th></th></tr></thead><tbody>` +
+    spots.map(c => {
+      const p = c.place ? places.find(x => x.id === c.place) : null;
+      if (p) { c.lat = p.lat; c.lon = p.lon; }
+      return c;
+    }).map(c => `<tr><td>${c.place ? esc((places.find(p => p.id === c.place) || {}).name || c.place) : `${c.lat.toFixed(3)}, ${c.lon.toFixed(3)}`}</td>` +
+      NETS.map(n => `<td class="num">${c.nets.get(n.key) ? hours(c.nets.get(n.key)) + " without" : "✓ fine"}</td>`).join("") +
+      `<td><a href="https://www.openstreetmap.org/?mlat=${c.lat}&mlon=${c.lon}#map=17/${c.lat}/${c.lon}" target="_blank" rel="noopener noreferrer">Map</a></td></tr>`).join("") +
+    "</tbody></table>" : `<p class="muted">No spot lost service for two minutes or more. 🎉</p>`;
+
+  // Tests: texts, taps, server.
+  const texts = tallyTexts(data), taps = tallyTaps(data);
+  let t = "";
+  if (texts.from.size) {
+    t += `<h3 style="margin-top:0">Test texts</h3><table><thead><tr><th>Sent from</th><th>Reached the other phone</th><th>Reply came back</th><th>Typical time</th></tr></thead><tbody>` +
+      [...texts.from.entries()].map(([k, s]) => `<tr><td>${netCell(k)}</td><td class="num">${bar(s.reached / s.sent, k, `${pct(s.reached / s.sent)}`)} <span class="few">of ${s.sent}</span></td>` +
+        `<td class="num">${pct(s.back / s.sent)}</td><td class="num">${fmt(median(s.latency))} s</td></tr>`).join("") + "</tbody></table>";
+  }
+  if (texts.composed) t += `<p class="small muted">${texts.composed} test texts were sent by hand from Messages (the Google Play build); their arrivals are the "Text arrived" taps below.</p>`;
+  if (taps.size) {
+    t += `<h3>Call and text taps</h3><table><thead><tr><th>Number called or texted</th><th>Calls rang</th><th>Texts arrived</th></tr></thead><tbody>` +
+      [...taps.entries()].map(([k, s]) => `<tr><td>${netCell(k)}</td>` +
+        `<td class="num">${s.CALL_IN[0] + s.CALL_IN[1] ? `${s.CALL_IN[0]} of ${s.CALL_IN[0] + s.CALL_IN[1]}` : "–"}</td>` +
+        `<td class="num">${s.TEXT_IN[0] + s.TEXT_IN[1] ? `${s.TEXT_IN[0]} of ${s.TEXT_IN[0] + s.TEXT_IN[1]}` : "–"}</td></tr>`).join("") + "</tbody></table>";
+  }
+  const serverRows = NETS.map(n => ({ key: n.key, s: tests.get("all|" + n.key) })).filter(r => r.s && r.s.server);
+  if (serverRows.length) {
+    t += `<h3>Reaching your server</h3><table><thead><tr><th>Network</th><th>Reached</th><th>Typical latency</th></tr></thead><tbody>` +
+      serverRows.map(r => `<tr><td>${netCell(r.key)}</td><td class="num">${bar(r.s.serverOk / r.s.server, r.key, pct(r.s.serverOk / r.s.server))} <span class="few">of ${r.s.server}</span></td>` +
+        `<td class="num">${fmt(median(r.s.serverLatency))} ms</td></tr>`).join("") + "</tbody></table>";
+  }
+  document.getElementById("tests").innerHTML = t || `<p class="muted">No test texts, taps or server tests in these exports.</p>`;
+
+  const usage = tallyUsage(data);
+  document.getElementById("usage").innerHTML = usage.size ? `<table><thead><tr><th>Network (carrying data)</th><th>Total</th><th>Per phone per day</th><th>Of which this app</th></tr></thead><tbody>` +
+    [...usage.entries()].map(([k, s]) => `<tr><td>${netCell(k)}</td><td class="num">${(s.bytes / 1e9).toFixed(2)} GB</td>` +
+      `<td class="num">${(s.bytes / 1e6 / Math.max(1, s.days.size)).toFixed(0)} MB</td><td class="num">${pct(s.bytes ? s.app / s.bytes : NaN)}</td></tr>`).join("") +
+    "</tbody></table><p class=\"small muted\">Only on the SIM that carried data at the time. A plan's limit counts all of it, this app's own tests included.</p>" :
+    `<p class="muted">No data-use rows.</p>`;
+
+  document.getElementById("notes").innerHTML =
+    `<p><strong>How to read this.</strong> "Time with service" leaves out airplane mode. "Typical signal" is the middle RSRP reading ` +
+    `(−80 dBm is strong, −110 dBm weak, −120 dBm barely usable). A dual-SIM phone measures both its networks at the same moments ` +
+    `and places, which makes that comparison the fairest one here. "▲ best" needs at least two networks with enough data ` +
+    `(half an hour of readings, 10 checks or 3 speed tests).</p>` +
+    `<p>Family Coverage is free and open source, by StorieDev.</p>`;
+
+  document.getElementById("report").classList.remove("hidden");
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Loading, and the made-up example.
+// ---------------------------------------------------------------------------------------------------------------
+
+const status = document.getElementById("loadStatus");
+
+async function loadFiles(list) {
+  const data = emptyData();
+  const problems = [];
+  status.textContent = "Reading…";
+  for (const f of list) {
+    try {
+      await loadExport(data, f.name || "export.zip", await readZip(f));
+    } catch (e) {
+      problems.push(e.message || String(e));
+    }
+  }
+  if (!data.devices.length) {
+    status.innerHTML = `<span class="err">✗ ${esc(problems.join(" · ") || "No exports found.")}</span>`;
+    return;
+  }
+  status.innerHTML = `✓ Read ${data.devices.length} export${data.devices.length === 1 ? "" : "s"}.` +
+    (problems.length ? ` <span class="err">✗ ${esc(problems.join(" · "))}</span>` : "");
+  render(data);
+  document.getElementById("report").scrollIntoView({ behavior: "smooth" });
+}
+
+document.getElementById("files").addEventListener("change", e => loadFiles([...e.target.files]));
+const drop = document.getElementById("drop");
+drop.addEventListener("dragover", e => { e.preventDefault(); drop.classList.add("over"); });
+drop.addEventListener("dragleave", () => drop.classList.remove("over"));
+drop.addEventListener("drop", e => { e.preventDefault(); drop.classList.remove("over"); loadFiles([...e.dataTransfer.files]); });
+
+/** A made-up household: two phones, two networks each, three places and a commute, two weeks. */
+function demoData() {
+  const data = emptyData();
+  let seed = 7;
+  const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+  const places = [
+    { id: "home", name: "Home", lat: 42.4500, lon: -73.2500, r: 150 },
+    { id: "school", name: "School", lat: 42.4700, lon: -73.2100, r: 200 },
+    { id: "work", name: "Work", lat: 42.4100, lon: -73.3000, r: 150 },
+  ];
+  const household = { id: "demo0001", name: "The Example family", places };
+  // Network quality by place (probability of service, typical RSRP): "Bluewave" strong at home, "Orange Field" at work.
+  const nets = { bluewave: ["Bluewave", { home: [1, -88], school: [0.995, -101], work: [0.93, -116], road: [0.97, -104] }],
+    orange: ["Orange Field", { home: [0.985, -109], school: [0.999, -92], work: [1, -86], road: [0.99, -97] }] };
+  const start = Date.UTC(2026, 8, 7, 11, 0, 0);
+  const members = [["Alex", ["home", "work"]], ["Sam", ["home", "school"]]];
+  members.forEach(([member, route], dev) => {
+    data.devices.push({ member, deviceId: "demo" + dev, household, appVersion: "demo", flavor: "full", file: "example", first: start, last: start + 14 * 864e5, rows: 0 });
+    for (let d = 0; d < 14; d++) {
+      for (let m = 0; m < 24 * 60; m += 2) {
+        const t = start + d * 864e5 + m * 6e4;
+        const hour = (m / 60 + 20) % 24; // local hours from the UTC base
+        const atAway = hour >= 8.5 && hour < 15.5 && (d % 7) < 5;
+        const driving = (hour >= 8 && hour < 8.5) || (hour >= 15.5 && hour < 16);
+        const spot = driving ? "road" : atAway ? route[1] : "home";
+        const p = places.find(x => x.id === spot) || { lat: 42.44 + rnd() * 0.04, lon: -73.28 + rnd() * 0.06 };
+        let sub = 0;
+        for (const [key, [label, q]] of Object.entries(nets)) {
+          const [ok, rsrp] = q[spot];
+          const up = rnd() < ok;
+          const S = data.samples;
+          S.ts.push(t); S.dev.push(dev); S.sub.push(sub++); S.net.push(noteNet(data, label, ""));
+          S.svc.push(up ? 1 : 2); S.nr.push(up && rnd() < (key === "orange" ? 0.6 : 0.35) ? 1 : 0);
+          S.rsrp.push(up ? Math.round(rsrp + (rnd() - 0.5) * 14) : NaN);
+          S.lat.push(p.lat + (rnd() - 0.5) * 0.001); S.lon.push(p.lon + (rnd() - 0.5) * 0.001); S.acc.push(12);
+          S.spd.push(driving ? 15 : 0); S.wifi.push(spot === "home" ? 1 : 0);
+          data.devices[dev].rows++;
+        }
+        if (m % 10 === 0 && spot !== "home") {
+          const label = dev === 0 ? "Bluewave" : "Orange Field";
+          const [ok] = nets[dev === 0 ? "bluewave" : "orange"][1][spot];
+          data.checks.push({ dev, t, ts: new Date(t).toISOString(), net: noteNet(data, label, ""), result: rnd() < ok ? "OK" : "TIMEOUT", connect_ms: String(30 + rnd() * 60), lat: String(p.lat), lon: String(p.lon), accuracy_m: "12" });
+        }
+        if (m % 60 === 0) {
+          const label = dev === 0 ? "Bluewave" : "Orange Field";
+          const fast = (dev === 0) === (spot === "home");
+          data.tests.push({ dev, t, ts: new Date(t).toISOString(), net: noteNet(data, label, ""), result: "OK", down_mbps: String((fast ? 140 : 45) * (0.5 + rnd())), up_mbps: String((fast ? 18 : 7) * (0.5 + rnd())), latency_ms: String(fast ? 32 : 48), lat: String(p.lat), lon: String(p.lon), accuracy_m: "12" });
+        }
+        if (m % 180 === 30 && atAway) {
+          const id = Math.floor(rnd() * 0xffffff).toString(16).toUpperCase().padStart(6, "0");
+          for (const [key, [label, q]] of Object.entries(nets)) {
+            const reached = rnd() < q[spot][0] - 0.02;
+            data.texts.push({ dev, t, ts: new Date(t).toISOString(), test_id: id + key[0], role: "test", event: "sent", result: "OK", net: noteNet(data, label, ""), peer: members[1 - dev][0] });
+            if (reached) data.texts.push({ dev: 1 - dev, t: t + 6000, ts: new Date(t + 6000).toISOString(), test_id: id + key[0], role: "test", event: "received", latency_s: String(3 + rnd() * 9), net: noteNet(data, label, "") });
+            if (reached && rnd() < 0.97) data.texts.push({ dev, t: t + 15000, ts: new Date(t + 15000).toISOString(), test_id: id + key[0], role: "echo", event: "received", net: noteNet(data, label, "") });
+          }
+        }
+        if (m % 2 === 0 && (m / 2) % 30 === 0) {
+          const label = (spot === "work" && dev === 0) ? "Bluewave" : (dev === 0 ? "Bluewave" : "Orange Field");
+          data.usage.push({ dev, t, ts: new Date(t).toISOString(), net: noteNet(data, label, ""), rx_bytes: String(spot === "home" ? 2e5 : 3e6 * rnd()), tx_bytes: String(4e5 * rnd()), app_rx_bytes: String(4e4), app_tx_bytes: String(1e4) });
+        }
+      }
+    }
+  });
+  return data;
+}
+
+document.getElementById("demo").addEventListener("click", () => {
+  status.textContent = "Showing made-up data: two phones, two networks, two weeks.";
+  render(demoData());
+  document.getElementById("report").scrollIntoView({ behavior: "smooth" });
+});
+if (location.search.includes("demo")) document.getElementById("demo").click();
+</script>
+</body>
+</html>

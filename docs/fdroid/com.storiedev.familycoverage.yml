@@ -1,0 +1,29 @@
+# Draft for fdroiddata (metadata/com.storiedev.familycoverage.yml). Fill in the first tag's commit before submitting.
+Categories:
+  - Connectivity
+License: Apache-2.0
+AuthorName: StorieDev
+AuthorEmail: hello@storiedev.com
+WebSite: https://sstangle73.github.io/family-coverage/
+SourceCode: https://github.com/sstangle73/family-coverage
+IssueTracker: https://github.com/sstangle73/family-coverage/issues
+Donate: https://buymeacoffee.com/stevenstorie
+
+AutoName: Family Coverage
+
+RepoType: git
+Repo: https://github.com/sstangle73/family-coverage.git
+
+Builds:
+  - versionName: 0.1.0
+    versionCode: 1
+    commit: v0.1.0
+    subdir: app
+    gradle:
+      - full
+
+AutoUpdateMode: Version
+UpdateCheckMode: Tags
+UpdateCheckData: gradle.properties|fc.versionCode=(\d+)|gradle.properties|fc.versionName=(.+)
+CurrentVersion: 0.1.0
+CurrentVersionCode: 1

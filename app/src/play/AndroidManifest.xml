@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The Google Play build: no SMS permissions at all, and no direct battery-exemption request (Play limits it to
+     listed uses); the owner sets "Unrestricted" in Android's own battery list instead. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <uses-permission
+        android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS"
+        tools:node="remove" />
+
+    <application>
+        <!-- No screen: notes the test, then opens the phone's Messages app with it filled in. -->
+        <activity
+            android:name=".TextComposeActivity"
+            android:excludeFromRecents="true"
+            android:exported="false"
+            android:noHistory="true"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar" />
+    </application>
+</manifest>

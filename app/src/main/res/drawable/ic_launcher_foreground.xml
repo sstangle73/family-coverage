@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Four signal bars on a map pin's baseline. 108dp canvas, art kept inside the 66dp safe zone. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path android:fillColor="#FFFFFF" android:pathData="M33,66h7v10h-7z" />
+    <path android:fillColor="#FFFFFF" android:pathData="M44,58h7v18h-7z" />
+    <path android:fillColor="#FFFFFF" android:pathData="M55,49h7v27h-7z" />
+    <path android:fillColor="#FFD166" android:pathData="M66,40h7v36h-7z" />
+    <path android:fillColor="#FFFFFF" android:pathData="M31,79h44v3h-44z" />
+</vector>

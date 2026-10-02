@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The full build (F-Droid, GitHub): automatic test texts. No READ_SMS: the app can't read the phone's messages; it
+     sees texts only as they arrive, and only while test texts are on. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <uses-permission android:name="android.permission.SEND_SMS" />
+    <uses-permission android:name="android.permission.RECEIVE_SMS" />
+    <!-- Repeated from the main manifest so this one stands alone: tablets without a SIM can still install. -->
+    <uses-feature
+        android:name="android.hardware.telephony"
+        android:required="false" />
+
+    <application>
+        <!-- Both SMS receivers start disabled; the logger enables them while test texts are on
+             (TextBus.applyReceivers). BROADCAST_SMS: only the system can deliver to them. -->
+        <!-- Silent test texts: data SMS to the app's own port, and nothing else. -->
+        <receiver
+            android:name=".DataSmsReceiver"
+            android:enabled="false"
+            android:exported="true"
+            android:permission="android.permission.BROADCAST_SMS">
+            <intent-filter>
+                <action android:name="android.intent.action.DATA_SMS_RECEIVED" />
+                <data
+                    android:host="localhost"
+                    android:port="16474"
+                    android:scheme="sms" />
+            </intent-filter>
+        </receiver>
+        <!-- Visible test texts: this one is shown every incoming text and drops all but tests from the partner. -->
+        <receiver
+            android:name=".TextSmsReceiver"
+            android:enabled="false"
+            android:exported="true"
+            android:permission="android.permission.BROADCAST_SMS">
+            <intent-filter>
+                <action android:name="android.provider.Telephony.SMS_RECEIVED" />
+            </intent-filter>
+        </receiver>
+        <!-- The app's own texts' send results and delivery reports. -->
+        <receiver
+            android:name=".SmsResultReceiver"
+            android:exported="false" />
+    </application>
+</manifest>

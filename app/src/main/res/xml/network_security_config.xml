@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Plain http is allowed here because a household's own server may sit on the home network without a certificate.
+     The app itself refuses http to anything but a home-network or private VPN address (UrlRules), so data never
+     crosses the internet unencrypted. Everything else the app talks to is https or a raw socket (the data check). -->
+<network-security-config xmlns:tools="http://schemas.android.com/tools">
+    <base-config
+        cleartextTrafficPermitted="true"
+        tools:ignore="InsecureBaseConfiguration" />
+</network-security-config>

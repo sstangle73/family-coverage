@@ -1,0 +1,18 @@
+.gradle/
+build/
+app/build/
+local.properties
+keystore.properties
+*.jks
+*.p12
+*.keystore
+.idea/
+*.iml
+.DS_Store
+captures/
+# The optional server's data (location history) and Python caches
+server/data/
+__pycache__/
+*.pyc
+# Exports and reports made while testing
+*.zip

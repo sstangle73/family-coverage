@@ -22,7 +22,7 @@ For maintainers. Three channels, one codebase:
       debug key: a release signed with it couldn't be updated.
 - [ ] **Screenshots** for `fastlane/metadata/android/en-US/images/phoneScreenshots/` (F-Droid) and the Play listing.
       Use a made-up household, never real places.
-- [ ] Test on at least one Pixel and one Samsung, dual-SIM, for a week.
+- [ ] Test on at least one Pixel and one Samsung, dual-SIM, for a week: [TESTING.md](TESTING.md).
 
 ## Each release
 

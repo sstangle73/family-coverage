@@ -1,0 +1,68 @@
+# Testing on a phone
+
+The checks to run on a real phone before a release, and on any new kind of phone. Use one that isn't recording for
+anything else. It needs Android 12 or newer and at least one SIM with mobile data; two SIMs show the side-by-side
+comparison. A second phone is optional, for the QR code join.
+
+Note the phone's make, model, Android version and SIMs, then work down the list, writing down anything that crashes,
+looks wrong or confuses you.
+
+## Install
+
+1. Install the APK (from a release, or `app-full-debug.apk` for a test build). Google Play Protect warns about the full
+   build ("Harmful app blocked") because it can send and receive texts. Choose **More details > Install anyway**. The
+   Play build has no SMS permission, so no warning.
+2. Open it: the welcome screen offers **Start a household** and **Join a household**.
+
+## Set up
+
+3. **Start a household:** name `Test household`, members `Tester` and `Second` on two lines, the default end date, no
+   server. Create it, then choose **Tester**.
+4. Read **What this phone records**: it should name the end date and say the data stays on the phone. Tick the
+   agreement; the text folds away and the box says *Agreed on <date>*.
+5. Work down **Setup**: each button turns to ✓ when allowed. Location "all the time" opens Android's settings page;
+   Battery opens the exemption prompt (full build) or Android's battery list (Play build). On Samsung, also add the app
+   to *Never sleeping apps*.
+6. **Start recording.** Within about 15 seconds the status shows ● Recording, a line per SIM (network, LTE or 5G,
+   dBm, service), the location, and *Power: moving...*. A notification with a **Stop** button appears.
+7. Leave the phone still for 5 minutes: *Power* changes to *still: sleeping, sampling about every 2 min*.
+
+## Places, sharing and joining
+
+8. **Add the spot you're at:** name it `Home`, 150 m. It appears under Places with its distance.
+9. **Share this household:** a QR code shows. **Share the code as text** opens the share sheet; **Copy the code**
+   copies it.
+10. **Join**, on a second phone if you have one: install, **Join a household > Scan the QR code**, allow the camera, and
+    point it at the first phone. The preview lists the name, members, end date and 1 place. **Join**, choose
+    **Second**. You don't need to start recording there.
+11. Without a second phone, on this one: **Scan an updated code > Paste a setup code**, paste, **Use this code**. The
+    preview says *Update this phone*; take it. You stay **Tester**.
+
+## Tests and texts
+
+12. **Call and text tests:** pick a SIM, tap **✓ Call rang**: a line says it was recorded. **Undo the last tap** takes
+    it back.
+13. **Test texts** (full build): tick **Send and answer test texts**, choose **Second**, and enter the number of
+    another phone you have as *Your partner's main number*. Allow SMS when the new Setup step asks. Tap **Send a test
+    now**. The other phone receives `FC test XXXXXX hh:mm:ss`, visibly (leave the silent boxes unticked). Nothing
+    answers it unless that phone runs the app too.
+14. **Measurements:** untick and re-tick both; the agreement text changes to match.
+
+## Leave it running
+
+15. Carry the phone for a day: a drive, a place without Wi-Fi.
+    - The SIM lines keep updating, and *Last data check* and *Last speed test* show results off Wi-Fi.
+    - Note the battery drop per hour, still and moving.
+16. **Restart the phone.** Recording comes back by itself within a minute or two of unlocking.
+
+## Export, report, clean up
+
+17. **Export the data**, save the zip (Downloads or Drive) and copy it to a computer.
+18. Open `docs/report/index.html` from the source code in a browser (it works straight from the file) and choose the
+    zip. The household, your SIMs' networks and the Home place appear, with no errors.
+19. **Delete the recorded data**, then **Leave the household**: the welcome screen returns.
+
+## What to send back
+
+The phone and Android version, which steps failed or surprised you, a screenshot of anything odd, and the battery
+numbers from step 15.

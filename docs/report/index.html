@@ -209,7 +209,9 @@ const tsMs = s => Date.parse(s);
 function emptyData() {
   return {
     devices: [],
-    samples: { ts: [], dev: [], sub: [], net: [], svc: [], nr: [], rsrp: [], lat: [], lon: [], acc: [], spd: [], wifi: [] },
+    samples: { ts: [], dev: [], sub: [], net: [], svc: [], exact: [], nr: [], norat: [], rsrp: [], lat: [], lon: [], acc: [],
+               spd: [], wifi: [], iw: [], cage: [], fage: [], plmn: [], roam: [], mode: [] },
+    wifiOnly: 0,          // seconds of Wi-Fi calling with no cell, counted as no service
     checks: [], tests: [], server: [], texts: [], events: [], usage: [],
     nets: new Map(),      // key -> { key, label, counts: Map(label -> n) }
     plmn: new Map(),      // network code -> Map(net key -> samples), to name rows that carry only a code
@@ -264,12 +266,22 @@ async function loadExport(data, name, files) {
           if (!m) data.plmn.set(plmn, m = new Map());
           m.set(key, (m.get(key) || 0) + 1);
         }
-        S.svc.push(SVC[r[col("service_state")]] ?? 2);
+        // cell_service (Family Coverage 0.2+) is the cellular registration itself; older files only have Android's
+        // service_state, which also says IN_SERVICE for Wi-Fi calling with no cell (finishLoad sorts those out).
+        const cellService = col("cell_service") >= 0 ? r[col("cell_service")] : "";
+        S.svc.push(SVC[cellService || r[col("service_state")]] ?? 2);
+        S.exact.push(cellService ? 1 : 0);
         const rat = r[col("rat")];
         S.nr.push(rat === "NR_SA" || rat === "NR_NSA" ? 1 : 0);
+        S.norat.push(!rat || rat === "NONE" ? 1 : 0);
         S.rsrp.push(num(r[col("rsrp")])); S.lat.push(num(r[col("lat")])); S.lon.push(num(r[col("lon")]));
         S.acc.push(num(r[col("accuracy_m")])); S.spd.push(num(r[col("speed_mps")]));
         S.wifi.push(r[col("wifi_connected")] === "true" ? 1 : 0);
+        S.iw.push(r[col("voice_transport")] === "IWLAN" ? 1 : 0);
+        S.cage.push(num(r[col("cell_age_s")])); S.fage.push(num(r[col("fix_age_s")]));
+        S.plmn.push(plmn || ""); S.roam.push(r[col("roaming")] === "true" ? 1 : 0);
+        const mode = col("mode") >= 0 ? r[col("mode")] : "";
+        S.mode.push(mode === "MOVING" ? 1 : mode === "STILL" ? 0 : -1);
         device.first = Math.min(device.first, t); device.last = Math.max(device.last, t); device.rows++;
       });
     } else if (["checks", "tests", "server", "tailnet", "texts", "events", "usage"].includes(table)) {
@@ -320,8 +332,42 @@ function finishLoad(data) {
   const byCode = new Map();
   for (const [code, m] of data.plmn) byCode.set(code, [...m.entries()].sort((a, b) => b[1] - a[1])[0][0]);
   for (const r of data.server) if (!r.net && r.mcc_mnc) r.net = byCode.get(r.mcc_mnc) || noteNet(data, "", r.mcc_mnc);
+
+  // Each SIM's own network code: the one most of its readings carry.
+  const codes = new Map();
+  for (let i = 0; i < S.ts.length; i++) {
+    if (!S.plmn[i]) continue;
+    const k = S.dev[i] + "|" + S.sub[i];
+    let m = codes.get(k);
+    if (!m) codes.set(k, m = new Map());
+    m.set(S.plmn[i], (m.get(S.plmn[i]) || 0) + 1);
+  }
+  const ownCode = new Map([...codes].map(([k, m]) => [k, [...m.entries()].sort((a, b) => b[1] - a[1])[0][0]]));
+  // The rules the family study's importer follows (cell-plan-research docs/signal-logging-import.md):
+  // - a signal reading older than 30 s while moving, or 5 minutes while still, doesn't count as signal;
+  // - Wi-Fi calling alone isn't coverage. Android says IN_SERVICE for a line registered only for Wi-Fi calling, so
+  //   such a row counts as no service when it has no cell of its own: rat NONE, a missing or stale cell reading, or
+  //   another network's cell without the roaming flag (seen at a dead-zone venue on Wi-Fi, 2026-10-02).
+  S.wonly = new Uint8Array(S.ts.length);
+  for (let i = 0; i < S.ts.length; i++) {
+    const fresh = S.cage[i] <= (isMoving(S, i) ? 30 : 300);
+    if (!fresh) S.rsrp[i] = NaN;
+    if (S.svc[i] !== 1 || S.exact[i] || !S.iw[i]) continue;
+    const own = ownCode.get(S.dev[i] + "|" + S.sub[i]);
+    const foreign = S.plmn[i] && own && S.plmn[i] !== own && !S.roam[i];
+    if (S.norat[i] || !fresh || foreign) {
+      S.svc[i] = 2;
+      S.rsrp[i] = NaN;
+      S.nr[i] = 0;
+      S.wonly[i] = 1;
+    }
+  }
   return data;
 }
+
+/** Moving: the app's own mode where it records one, else a location fix under 30 s old at over 1 m/s. A still phone
+ *  keeps its last fix, and that fix's speed, for hours, so speed alone would call a library morning a walk. */
+const isMoving = (S, i) => S.mode[i] >= 0 ? S.mode[i] === 1 : S.fage[i] <= 30 && S.spd[i] > 1;
 
 /** A member's name for display: Coverage Log's lower-case labels ("sam") get a capital. */
 const who = m => /^[a-z]/.test(m) && m === m.toLowerCase() ? m[0].toUpperCase() + m.slice(1) : m;
@@ -373,7 +419,9 @@ function placeOf(places, lat, lon, acc) {
 
 /**
  * Per network and per bucket (all, each place, moving, elsewhere): time with and without service, signal, 5G.
- * Each sample stands for the time until the same SIM's next sample, capped at 5 minutes.
+ * Each sample stands for the time until the same SIM's next sample, capped at 30 s while moving (the app samples every
+ * 10 s then, so a longer gap mustn't carry the last state down the road) and 10 minutes while still (a dozing phone
+ * samples up to about 9 minutes apart).
  */
 function coverage(data, places) {
   const S = data.samples, n = S.ts.length;
@@ -390,11 +438,13 @@ function coverage(data, places) {
   for (let k = 0; k < n; k++) {
     const i = order[k], j = order[k + 1];
     const same = j !== undefined && S.dev[j] === S.dev[i] && S.sub[j] === S.sub[i];
-    const w = Math.min(same ? (S.ts[j] - S.ts[i]) / 1000 : 120, 300);
+    const moving = isMoving(S, i);
+    const w = Math.min(same ? (S.ts[j] - S.ts[i]) / 1000 : (moving ? 10 : 120), moving ? 30 : 600);
     if (!(w > 0) || S.svc[i] === 0) continue; // airplane mode or a duplicate time: not coverage
+    if (S.wonly[i]) data.wifiOnly += w;
     const net = S.net[i];
     const place = placeOf(places, S.lat[i], S.lon[i], S.acc[i]);
-    const where = place ? "place:" + place : (S.spd[i] >= 2 ? "moving" : (isFinite(S.lat[i]) ? "elsewhere" : null));
+    const where = place ? "place:" + place : (moving ? "moving" : (isFinite(S.lat[i]) ? "elsewhere" : null));
     for (const b of where ? ["all", where] : ["all"]) {
       const s = get(b, net);
       if (S.svc[i] === 1) {
@@ -660,7 +710,7 @@ function render(data) {
       (rows.length ? netTable(rows, coverageCols.concat(testCols.slice(0, 2))) : `<p class="muted">No readings here yet.</p>`) + "</div>";
   }).join("") : `<div class="panel muted">No places: add them in the app (Places → Add the spot you're at), then export again.</div>`;
 
-  document.getElementById("elsewhere").innerHTML = [["moving", "On the move (2 m/s or faster)"], ["elsewhere", "Elsewhere, not moving"]].map(([b, title]) => {
+  document.getElementById("elsewhere").innerHTML = [["moving", "On the move"], ["elsewhere", "Elsewhere, not moving"]].map(([b, title]) => {
     const rows = rowsFor(b, cov, tests);
     return `<div class="panel scroll"><h3 style="margin-top:0">${title}</h3>` +
       (rows.length ? netTable(rows, coverageCols) : `<p class="muted">No readings.</p>`) + "</div>";
@@ -677,7 +727,7 @@ function render(data) {
       if (p) { c.lat = p.lat; c.lon = p.lon; }
       return c;
     }).map(c => `<tr><td>${c.place ? esc((places.find(p => p.id === c.place) || {}).name || c.place) : `${c.lat.toFixed(3)}, ${c.lon.toFixed(3)}`}</td>` +
-      NETS.map(n => `<td class="num">${c.nets.get(n.key) ? hours(c.nets.get(n.key)) + " without" : "✓ fine"}</td>`).join("") +
+      NETS.map(n => { const down = c.nets.get(n.key) || 0; return `<td class="num">${down >= 60 ? hours(down) + " without" : down > 0 ? "under a minute without" : "✓ fine"}</td>`; }).join("") +
       `<td><a href="https://www.openstreetmap.org/?mlat=${c.lat}&mlon=${c.lon}#map=17/${c.lat}/${c.lon}" target="_blank" rel="noopener noreferrer">Map</a></td></tr>`).join("") +
     "</tbody></table>" : `<p class="muted">No spot lost service for two minutes or more. 🎉</p>`;
 
@@ -717,7 +767,9 @@ function render(data) {
     `<p class="muted">No data-use rows.</p>`;
 
   document.getElementById("notes").innerHTML =
-    `<p><strong>How to read this.</strong> "Time with service" leaves out airplane mode. "Typical signal" is the middle RSRP reading ` +
+    `<p><strong>How to read this.</strong> "Time with service" leaves out airplane mode, and doesn't count Wi-Fi calling ` +
+    `with no cell of its own as service${data.wifiOnly >= 600 ? ` (${hours(data.wifiOnly)} of it here)` : ""}. ` +
+    `"Typical signal" is the middle RSRP reading ` +
     `(−80 dBm is strong, −110 dBm weak, −120 dBm barely usable). A dual-SIM phone measures both its networks at the same moments ` +
     `and places, which makes that comparison the fairest one here. Data checks and speed tests run on whichever SIM ` +
     `carries mobile data, so a SIM that never did shows "–" there. "▲ best" needs at least two networks with enough data ` +
@@ -797,6 +849,8 @@ function demoData() {
           S.rsrp.push(up ? Math.round(rsrp + (rnd() - 0.5) * 14) : NaN);
           S.lat.push(p.lat + (rnd() - 0.5) * 0.001); S.lon.push(p.lon + (rnd() - 0.5) * 0.001); S.acc.push(12);
           S.spd.push(driving ? 15 : 0); S.wifi.push(spot === "home" ? 1 : 0);
+          S.exact.push(1); S.norat.push(up ? 0 : 1); S.iw.push(0); S.cage.push(1); S.fage.push(1); S.plmn.push("");
+          S.roam.push(0); S.mode.push(driving ? 1 : 0);
           data.devices[dev].rows++;
         }
         if (m % 10 === 0 && spot !== "home") {
@@ -830,7 +884,7 @@ function demoData() {
 
 document.getElementById("demo").addEventListener("click", () => {
   status.textContent = "Showing made-up data: two phones, two networks, two weeks.";
-  render(demoData());
+  render(finishLoad(demoData()));
   document.getElementById("report").scrollIntoView({ behavior: "smooth" });
 });
 

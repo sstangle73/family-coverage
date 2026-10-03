@@ -30,39 +30,53 @@ looks wrong or confuses you.
 ## Places, sharing and joining
 
 8. **Add the spot you're at:** name it `Home`, 150 m. It appears under Places with its distance.
-9. **Share this household:** a QR code shows. **Share the code as text** opens the share sheet; **Copy the code**
-   copies it.
-10. **Join**, on a second phone if you have one: install, **Join a household > Scan the QR code**, allow the camera, and
+9. **Edit** Home: untick **Second** under *Whose test texts it's for*, keep Mon to Fri, and type `25:00` as the time.
+   **Save** keeps the dialog open with a reason. Change the time to `8:15, 15:20` and save: the row adds *for Tester*
+   and *tests Mon-Fri 08:15, 15:20*.
+10. **Share this household:** a QR code shows. **Share the code as text** opens the share sheet; **Copy the code**
+    copies it.
+11. **Join**, on a second phone if you have one: install, **Join a household > Scan the QR code**, allow the camera, and
     point it at the first phone. The preview lists the name, members, end date and 1 place. **Join**, choose
-    **Second**. You don't need to start recording there.
-11. Without a second phone, on this one: **Scan an updated code > Paste a setup code**, paste, **Use this code**. The
-    preview says *Update this phone*; take it. You stay **Tester**.
+    **Second**. You don't need to start recording there. Its Places list shows Home *for Tester* too.
+12. Without a second phone, on this one: **Scan an updated code > Paste a setup code**, paste, **Use this code**. The
+    preview says *Update this phone*; take it. You stay **Tester**, and Home keeps its times.
 
 ## Tests and texts
 
-12. **Call and text tests:** pick a SIM, tap **✓ Call rang**: a line says it was recorded. **Undo the last tap** takes
+13. **Call and text tests:** pick a SIM, tap **✓ Call rang**: a line says it was recorded. **Undo the last tap** takes
     it back.
-13. **Test texts** (full build): tick **Send and answer test texts**, choose **Second**, and enter the number of
+14. **Test texts** (full build): tick **Send and answer test texts**, choose **Second**, and enter the number of
     another phone you have as *Your partner's main number*. Allow SMS when the new Setup step asks. Tap **Send a test
     now**. The other phone receives `FC test XXXXXX hh:mm:ss`, visibly (leave the silent boxes unticked). Nothing
     answers it unless that phone runs the app too.
-14. **Measurements:** untick and re-tick both; the agreement text changes to match.
+15. **Measurements:** untick and re-tick both; the agreement text changes to match.
 
 ## Leave it running
 
-15. Carry the phone for a day: a drive, a place without Wi-Fi.
+16. Carry the phone for a day: a drive, a place without Wi-Fi.
     - The SIM lines keep updating, and *Last data check* and *Last speed test* show results off Wi-Fi.
     - Note the battery drop per hour, still and moving.
-16. **Restart the phone.** Recording comes back by itself within a minute or two of unlocking.
+17. **Wi-Fi calling alone**, if a SIM has Wi-Fi calling: turn on airplane mode, then turn Wi-Fi back on, and wait two
+    minutes. That SIM's line shows `NONE`, then `POWER_OFF` or `OUT_OF_SERVICE`, and `voice IWLAN`: never
+    `IN_SERVICE`, because Wi-Fi calling isn't coverage. Turn airplane mode off.
+18. **Restart the phone.** Recording comes back by itself within a minute or two of unlocking.
+
+## With a server (optional)
+
+19. Run the server (`server/README.md`), **Edit the household** to set its address, agree again, and approve the phone
+    on the server. Within 15 minutes on Wi-Fi, the server's `list` shows the phone approved with a recent *last* time,
+    and `/report/` shows its readings once you enter the report password.
+20. If the server is a Tailscale node and the phone reaches it through Tailscale: off Wi-Fi, *Last server test* ends
+    with *Tailscale direct -> direct* or *derp -> direct* (the first test runs about 7 minutes after recording starts).
 
 ## Export, report, clean up
 
-17. **Export the data**, save the zip (Downloads or Drive) and copy it to a computer.
-18. Open `docs/report/index.html` from the source code in a browser (it works straight from the file) and choose the
+21. **Export the data**, save the zip (Downloads or Drive) and copy it to a computer.
+22. Open `docs/report/index.html` from the source code in a browser (it works straight from the file) and choose the
     zip. The household, your SIMs' networks and the Home place appear, with no errors.
-19. **Delete the recorded data**, then **Leave the household**: the welcome screen returns.
+23. **Delete the recorded data**, then **Leave the household**: the welcome screen returns.
 
 ## What to send back
 
 The phone and Android version, which steps failed or surprised you, a screenshot of anything odd, and the battery
-numbers from step 15.
+numbers from step 16.

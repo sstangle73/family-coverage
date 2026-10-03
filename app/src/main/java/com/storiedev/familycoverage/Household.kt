@@ -11,7 +11,10 @@ import java.util.Locale
 import java.util.zip.Deflater
 import java.util.zip.Inflater
 
-/** A place the household cares about: a centre and a radius, plus optional fallback times for test texts. */
+/**
+ * A place the household cares about: a centre and a radius, plus optional fallback times for test texts and the
+ * members whose tests it's for.
+ */
 data class Place(
     val id: String,
     val name: String,
@@ -21,7 +24,11 @@ data class Place(
     /** Fallback test times: days ("MON".."SUN") and times ("08:15"). A test goes out then if none did in the hour. */
     val days: List<String> = emptyList(),
     val times: List<String> = emptyList(),
+    /** Whose test texts the place is for (arriving there, and its fallback times). Empty means everyone's. */
+    val members: List<String> = emptyList(),
 ) {
+    fun isFor(member: String?): Boolean = members.isEmpty() || member in members
+
     companion object {
         const val DEFAULT_RADIUS_M = 150.0
         const val MIN_RADIUS_M = 50.0
@@ -58,15 +65,22 @@ data class Household(
                     .apply {
                         if (p.days.isNotEmpty()) put("days", JSONArray(p.days))
                         if (p.times.isNotEmpty()) put("times", JSONArray(p.times))
+                        if (p.members.isNotEmpty()) put("m", JSONArray(p.members))
                     }
             }))
         }
         return o
     }
 
-    fun withPlace(p: Place): Household = copy(places = places.filter { it.id != p.id } + p)
+    /** Adds [p], or replaces the place with its id where it stands in the list. */
+    fun withPlace(p: Place): Household =
+        if (places.any { it.id == p.id }) copy(places = places.map { if (it.id == p.id) p else it }) else copy(places = places + p)
 
     fun withoutPlace(id: String): Household = copy(places = places.filter { it.id != id })
+
+    /** New members: a place for some members only keeps those still in the household (none left: everyone's). */
+    fun withMembers(list: List<String>): Household =
+        copy(members = list, places = places.map { p -> p.copy(members = p.members.filter { it in list }) })
 
     companion object {
         const val CODE_PREFIX = "FC1."
@@ -77,7 +91,9 @@ data class Household(
         private const val MAX_INFLATED = 64 * 1024
         private val CODE = Regex("FC1\\.[A-Za-z0-9_-]{8,}")
         private val TIME = Regex("^([01]\\d|2[0-3]):[0-5]\\d$")
-        private val DAYS = setOf("MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN")
+        /** The days a place's fallback times can name, in week order. */
+        val DAYS = listOf("MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN")
+        const val MAX_TIMES = 6
         private val random = SecureRandom()
 
         fun newId(): String = ByteArray(4).also { random.nextBytes(it) }.joinToString("") { "%02x".format(it) }
@@ -116,6 +132,36 @@ data class Household(
             return s
         }
 
+        /**
+         * Fallback times typed as "8:15, 15:20" (commas or spaces between them): sorted "HH:MM" strings, at most
+         * [MAX_TIMES]. Throws with a reason.
+         */
+        fun cleanTimes(raw: String): List<String> {
+            val out = raw.split(Regex("[,;\\s]+")).filter { it.isNotBlank() }.map { t ->
+                val m = Regex("^(\\d{1,2})[:.](\\d{2})$").find(t)
+                    ?: throw IllegalArgumentException("write each time like 8:15 or 15:20 (\"$t\" isn't one)")
+                val h = m.groupValues[1].toInt()
+                val min = m.groupValues[2].toInt()
+                require(h in 0..23 && min in 0..59) { "\"$t\" isn't a time of day" }
+                "%02d:%02d".format(Locale.US, h, min)
+            }.distinct().sorted()
+            require(out.size <= MAX_TIMES) { "at most $MAX_TIMES times a place" }
+            return out
+        }
+
+        /** A place's fallback times for people: "Mon-Fri 08:15, 15:20", "Sat, Sun 10:00". */
+        fun describeTimes(p: Place): String? {
+            if (p.times.isEmpty()) return null
+            val idx = p.days.map { DAYS.indexOf(it) }.filter { it >= 0 }.sorted()
+            fun name(i: Int) = DAYS[i].lowercase(Locale.US).replaceFirstChar { it.uppercase() }
+            val days = when {
+                idx.size == 7 -> "every day"
+                idx.size >= 3 && idx.last() - idx.first() == idx.size - 1 -> "${name(idx.first())}-${name(idx.last())}"
+                else -> idx.joinToString(", ") { name(it) }
+            }
+            return "$days ${p.times.joinToString(", ")}"
+        }
+
         /** A stable id for a new place: its name in lower case letters and digits, made unique among [taken]. */
         fun placeId(name: String, taken: Set<String>): String {
             val base = name.lowercase(Locale.US).map { if (it.isLetterOrDigit() && it.code < 128) it else '-' }
@@ -133,7 +179,7 @@ data class Household(
             require(members.isNotEmpty()) { "the household has no members" }
             require(members.size <= MAX_MEMBERS) { "a household can have at most $MAX_MEMBERS members" }
             val places = o.optJSONArray("places")?.let { a ->
-                (0 until minOf(a.length(), MAX_PLACES)).mapNotNull { i -> parsePlace(a.optJSONObject(i)) }
+                (0 until minOf(a.length(), MAX_PLACES)).mapNotNull { i -> parsePlace(a.optJSONObject(i), members) }
             }.orEmpty().distinctBy { it.id }
             val end = try {
                 LocalDate.parse(o.getString("end"))
@@ -150,7 +196,7 @@ data class Household(
             )
         }
 
-        private fun parsePlace(o: JSONObject?): Place? {
+        private fun parsePlace(o: JSONObject?, householdMembers: List<String>): Place? {
             o ?: return null
             val lat = o.optDouble("lat", Double.NaN)
             val lon = o.optDouble("lon", Double.NaN)
@@ -159,7 +205,9 @@ data class Household(
             val days = o.optJSONArray("days")?.let { a -> (0 until a.length()).map { a.optString(it).uppercase(Locale.US).take(3) } }
                 .orEmpty().filter { it in DAYS }.distinct()
             val times = o.optJSONArray("times")?.let { a -> (0 until a.length()).map { a.optString(it) } }
-                .orEmpty().filter { TIME.matches(it) }.distinct()
+                .orEmpty().filter { TIME.matches(it) }.distinct().take(MAX_TIMES)
+            val members = o.optJSONArray("m")?.let { a -> (0 until a.length()).mapNotNull { cleanMember(a.optString(it)) } }
+                .orEmpty().filter { it in householdMembers }.distinct()
             return Place(
                 id = id,
                 name = cleanName(o.optString("name")) ?: id,
@@ -168,6 +216,7 @@ data class Household(
                 radiusM = o.optDouble("r", Place.DEFAULT_RADIUS_M).coerceIn(Place.MIN_RADIUS_M, Place.MAX_RADIUS_M),
                 days = days,
                 times = times,
+                members = members,
             )
         }
 

@@ -45,6 +45,8 @@ class TelephonySampler(context: Context, private val handler: Handler) {
         @Volatile var cells: List<CellInfo> = emptyList()
         @Volatile var display: TelephonyDisplayInfo? = null
         @Volatile var lastRow: Row? = null
+        /** The network code of the SIM's last real cellular registration (rows leave mcc_mnc blank without one). */
+        @Volatile var knownMccMnc: String? = null
 
         val callback: TelephonyCallback = object : TelephonyCallback(),
             TelephonyCallback.ServiceStateListener,
@@ -78,6 +80,8 @@ class TelephonySampler(context: Context, private val handler: Handler) {
         val nrBand: Int?, val nrArfcn: Int?, val nrPci: Int?, val nrRsrp: Int?, val nrRsrq: Int?, val nrSinr: Int?,
         val cellAgeS: Double?,
         val displayOverride: String? = null, val ccCount: Int? = null, val bwMhz: Double? = null,
+        /** The cellular registration itself (CellMath.cellService): unlike serviceState, never IN_SERVICE on Wi-Fi calling alone. */
+        val cellService: String = serviceState,
     ) {
         /** How the app names this SIM to people: its carrier, plus the SIM's own label when that says more. */
         val displayName: String
@@ -185,8 +189,12 @@ class TelephonySampler(context: Context, private val handler: Handler) {
             )
         }
         val psWwan = regs.firstOrNull { !it.wlan && it.ps && it.registered }
-        val state = CellMath.serviceState(ss?.state ?: ServiceState.STATE_OUT_OF_SERVICE, psWwan != null)
-        val inService = state == "IN_SERVICE"
+        val androidState = ss?.state ?: ServiceState.STATE_OUT_OF_SERVICE
+        val state = CellMath.serviceState(androidState, psWwan != null)
+        val cellService = CellMath.cellService(androidState, regs)
+        // Cell details only with a real cellular registration. On Wi-Fi calling alone the modem can still list a cell
+        // it camps on, even another network's, and that isn't this SIM's service (seen at a dead-zone venue).
+        val inService = cellService == "IN_SERVICE"
 
         val cells = s.cells
         val lte = cells.filterIsInstance<CellInfoLte>().firstOrNull { it.isRegistered }
@@ -199,7 +207,7 @@ class TelephonySampler(context: Context, private val handler: Handler) {
             ?.firstOrNull { CellMath.ssRsrp(it.ssRsrp) != null }
 
         val rat = CellMath.rat(
-            serviceState = state,
+            serviceState = cellService,
             primaryNr = nrPrimary != null,
             primaryLte = lte != null,
             nrLeg = nrSecondary != null || nrSignal != null,
@@ -258,11 +266,15 @@ class TelephonySampler(context: Context, private val handler: Handler) {
         val displayOverride = if (inService) s.display?.let { CellMath.displayOverride(it.overrideNetworkType) } else null
         val (ccCount, bwMhz) = CellMath.bandwidth(if (inService) ss?.cellBandwidths else null)
 
+        // The network code only for a real cellular registration: blank otherwise, so a camped-on neighbour or the
+        // last network can't be mistaken for service. knownMccMnc keeps the SIM's last real one for the test texts.
+        val servingCode = if (inService) mccMnc ?: s.tm.networkOperator?.takeIf { it.isNotBlank() } else null
+        if (servingCode != null) s.knownMccMnc = servingCode
         return Row(
             subId = s.subId,
             subLabel = s.info.displayName?.toString()?.trim()?.takeIf { it.isNotEmpty() },
             carrier = stableCarrier(s),
-            mccMnc = mccMnc ?: s.tm.networkOperator?.takeIf { it.isNotBlank() },
+            mccMnc = servingCode,
             dataSim = s.subId == dataSubId,
             serviceState = state,
             voiceTransport = CellMath.voiceTransport(regs),
@@ -273,6 +285,7 @@ class TelephonySampler(context: Context, private val handler: Handler) {
             nrBand = nrBand, nrArfcn = nrArfcn, nrPci = nrPci, nrRsrp = nrRsrp, nrRsrq = nrRsrq, nrSinr = nrSinr,
             cellAgeS = cellAgeS?.let { Csv.round(it, 1) },
             displayOverride = displayOverride, ccCount = ccCount, bwMhz = bwMhz,
+            cellService = cellService,
         ).also { s.lastRow = it }
     }
 
@@ -289,8 +302,8 @@ class TelephonySampler(context: Context, private val handler: Handler) {
         private fun plmn(mcc: String?, mnc: String?): String? =
             if (!mcc.isNullOrBlank() && !mnc.isNullOrBlank()) mcc + mnc else null
 
-        /** The samples row, in Tables.SAMPLES order. */
-        fun values(t: OffsetDateTime, member: String, r: Row, wifi: Boolean, fix: Location?): List<Any?> = listOf(
+        /** The samples row, in Tables.SAMPLES order. [moving] is the tracker's mode when the row is written. */
+        fun values(t: OffsetDateTime, member: String, r: Row, wifi: Boolean, fix: Location?, moving: Boolean): List<Any?> = listOf(
             Csv.ts(t), member, r.subId, r.subLabel, r.carrier, r.mccMnc, r.dataSim, r.serviceState, r.voiceTransport,
             r.roaming, wifi, r.rat, r.band, r.arfcn, r.pci, r.cellId, r.tac, r.rsrp, r.rsrq, r.sinr,
             r.nrBand, r.nrArfcn, r.nrPci, r.nrRsrp, r.nrRsrq, r.nrSinr, r.cellAgeS,
@@ -300,6 +313,7 @@ class TelephonySampler(context: Context, private val handler: Handler) {
             fix?.takeIf { it.hasSpeed() }?.let { Csv.round(it.speed.toDouble(), 2) },
             fix?.let { Csv.round(LocationTracker.fixAgeS(it), 1) },
             r.displayOverride, r.ccCount, r.bwMhz,
+            r.cellService, if (moving) "MOVING" else "STILL",
         )
     }
 }

@@ -57,19 +57,19 @@ class PromptTexts(
         val nowMs = System.currentTimeMillis()
         val now = LocalDateTime.now()
         log.rollDay(now.toLocalDate().toString())
-        visits.refresh(prefs.household)
+        visits.refresh(prefs.household, prefs.member)
         val fix = log.currentFix()
         val here = fix?.let { visits.placeAt(it) }
         visits.update(here, fix)
         showStatus()
         if (inCall() || blocker() != null) return
         val v = visits.dwelled(Config.TEXT_DWELL_MS)
-        if (v != null && v.exchanges < 1 && may(nowMs, now.toLocalTime()) == null) {
+        if (v != null && visits.isMine(v.placeId) && v.exchanges < 1 && may(nowMs, now.toLocalTime()) == null) {
             v.exchanges++
             prompt("place", v.placeId)
             return
         }
-        for (p in visits.places) for (time in p.times) {
+        for (p in visits.mine) for (time in p.times) {
             val slot = runCatching { LocalTime.parse(time) }.getOrNull() ?: continue
             val days = p.days.mapNotNull { TextMath.day(it) }.toSet()
             val key = "${now.toLocalDate()} ${p.id} $time"

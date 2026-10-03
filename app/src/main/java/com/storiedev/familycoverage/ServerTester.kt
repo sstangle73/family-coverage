@@ -3,6 +3,8 @@ package com.storiedev.familycoverage
 import android.content.Context
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
+import org.json.JSONException
+import org.json.JSONObject
 import java.io.IOException
 import java.net.ConnectException
 import java.net.HttpURLConnection
@@ -16,9 +18,16 @@ import java.net.UnknownHostException
  * down and 125 KB up against the server's /api/test endpoints, over the phone's default network (off Wi-Fi: the
  * carrier, or a VPN the household runs). It answers questions a carrier speed test can't, such as whether a home
  * camera or file server is usable from the school car park.
+ *
+ * A server that is itself a Tailscale node also answers "begin" and "end" with how its tailscaled reaches this phone
+ * at that moment, direct or relayed (DERP), because Tailscale often starts a flow relayed and moves to direct within
+ * seconds. The phone can't see its own path; the server can.
  */
 class ServerTester(context: Context, private val prefs: Prefs) {
     private val cm = context.getSystemService(ConnectivityManager::class.java)
+
+    /** The server's answer to begin or end: path is direct, derp, peer_relay, idle, unknown or not_tailscale. */
+    data class Path(val path: String?, val derpRegion: String?, val directFamily: String?, val directLan: Boolean?)
 
     data class Result(
         val latencyMs: Double? = null,
@@ -30,6 +39,9 @@ class ServerTester(context: Context, private val prefs: Prefs) {
         val vpnActive: Boolean = false,
         val cellIpv6: Boolean? = null,
         val result: String,
+        /** Null when the server doesn't answer begin or end (one from before the path test). */
+        val start: Path? = null,
+        val end: Path? = null,
         /** For the status screen only (not a CSV column). */
         val error: String? = null,
     )
@@ -44,17 +56,22 @@ class ServerTester(context: Context, private val prefs: Prefs) {
             cm.getNetworkCapabilities(it)?.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) == true
         }
         val ipv6 = cellular?.let { NetInfo.hasGlobalIpv6(cm.getLinkProperties(it)) }
+        var start: Path? = null
         var latency: Double? = null
         var jitter: Double? = null
         var downBytes = 0L
         var downMbps: Double? = null
-        fun failed(result: String, e: Exception) = Result(latency, jitter, downMbps, null, downBytes, 0, vpn, ipv6,
-            result, e.javaClass.simpleName + (e.message?.let { ": " + it.take(80) } ?: ""))
+        fun failed(result: String, e: Exception) = Result(
+            latencyMs = latency, jitterMs = jitter, downMbps = downMbps, downBytes = downBytes, vpnActive = vpn,
+            cellIpv6 = ipv6, result = result, start = start,
+            error = e.javaClass.simpleName + (e.message?.let { ": " + it.take(80) } ?: ""),
+        )
         return try {
             val url = URL(server)
             if (!UrlRules.allowed(url.protocol, InetAddress.getAllByName(url.host).toList())) {
                 return Result(vpnActive = vpn, cellIpv6 = ipv6, result = "REFUSED", error = "plain http to a public address")
             }
+            start = path(server, "/api/test/begin")
             val times = mutableListOf<Double>()
             for (i in 0 until 6) {
                 val t0 = System.nanoTime()
@@ -84,8 +101,13 @@ class ServerTester(context: Context, private val prefs: Prefs) {
             } finally {
                 u.disconnect()
             }
-            Result(latency, jitter, downMbps, Stats.mbps(Config.SERVER_UP_BYTES.toLong(), upSecs), downBytes,
-                Config.SERVER_UP_BYTES.toLong(), vpn, ipv6, "OK")
+            val end = path(server, "/api/test/end")
+            Result(
+                latencyMs = latency, jitterMs = jitter, downMbps = downMbps,
+                upMbps = Stats.mbps(Config.SERVER_UP_BYTES.toLong(), upSecs), downBytes = downBytes,
+                upBytes = Config.SERVER_UP_BYTES.toLong(), vpnActive = vpn, cellIpv6 = ipv6, result = "OK",
+                start = start, end = end,
+            )
         } catch (e: Deadline) {
             downBytes = e.bytes
             downMbps = Stats.mbps(e.bytes, e.seconds)
@@ -100,6 +122,32 @@ class ServerTester(context: Context, private val prefs: Prefs) {
             failed(if (e.code == 401 || e.code == 403) "NOT_APPROVED" else "HTTP_ERROR", e)
         } catch (e: Exception) {
             failed("ERROR", e)
+        }
+    }
+
+    /** begin or end: how the server reaches this phone now. Null from a server without them (it answers 404). */
+    private fun path(server: String, endpoint: String): Path? {
+        val c = open(server, endpoint, 15_000)
+        try {
+            c.requestMethod = "POST"
+            c.doOutput = true
+            c.setFixedLengthStreamingMode(0)
+            c.outputStream.close()
+            if (c.responseCode == 404) return null
+            if (c.responseCode !in 200..299) throw HttpError(c.responseCode)
+            val j = try {
+                JSONObject(c.inputStream.bufferedReader().use { it.readText() })
+            } catch (e: JSONException) {
+                return null
+            }
+            return Path(
+                path = j.optString("path").takeIf { it.isNotBlank() },
+                derpRegion = j.optString("derp_region").takeIf { it.isNotBlank() },
+                directFamily = j.optString("direct_family").takeIf { it.isNotBlank() },
+                directLan = if (!j.has("direct_lan") || j.isNull("direct_lan")) null else j.optBoolean("direct_lan"),
+            )
+        } finally {
+            c.disconnect()
         }
     }
 

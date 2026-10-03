@@ -19,4 +19,7 @@ It's a single Python file, standard library only, with a Docker image. In short:
    It's as fresh as the phones' uploads, which come every 15 minutes on Wi-Fi and every hour elsewhere.
 6. At the end, `export-zips` writes the same zips the phones export.
 
+On Tailscale, a server that is itself a Tailscale node also records whether each phone reached it directly or
+through Tailscale's relays, which is what makes a camera stream smooth or choppy.
+
 The full instructions are in the server's README in the source code.

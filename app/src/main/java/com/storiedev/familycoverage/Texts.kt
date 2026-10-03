@@ -36,14 +36,21 @@ class PlaceVisits {
         var exchanges = 0
     }
 
+    /** All the household's places: a visit to any of them is noted, and texts name the place they were at. */
     var places: List<Place> = emptyList()
+        private set
+    /** The places whose tests are this member's: arriving at one starts a test, and its fallback times apply. */
+    var mine: List<Place> = emptyList()
         private set
     var visit: Visit? = null
         private set
 
-    fun refresh(household: Household?) {
+    fun refresh(household: Household?, member: String?) {
         places = household?.places.orEmpty()
+        mine = places.filter { it.isFor(member) }
     }
+
+    fun isMine(placeId: String): Boolean = mine.any { it.id == placeId }
 
     fun placeAt(fix: Location): Place? = places.firstOrNull { where(fix, it) == TextMath.Where.INSIDE }
 
@@ -81,6 +88,8 @@ class TextSnap(
     val subLabel: String?, val carrier: String?, val mccMnc: String?, val serviceState: String?,
     val voiceTransport: String?, val rat: String?, val rsrp: Int?, val wifi: Boolean, val dataSim: Boolean?,
     val placeId: String?, val lat: Double?, val lon: Double?, val accuracy: Double?,
+    /** The cellular registration (CellMath.cellService): not written to texts, used to judge a refused silent text. */
+    val cellService: String? = null,
 )
 
 /** Writes texts rows for either build: the SIM's state and the place, from the logger's own readings. */
@@ -100,6 +109,7 @@ class TextLog(
             placeId ?: fix?.let { visits.placeAt(it) }?.id,
             fix?.let { Csv.round(it.latitude, 7) }, fix?.let { Csv.round(it.longitude, 7) },
             fix?.takeIf { it.hasAccuracy() }?.let { Csv.round(it.accuracy.toDouble(), 1) },
+            r?.cellService,
         )
     }
 

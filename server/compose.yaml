@@ -13,6 +13,9 @@ services:
       - "8745:8745"
     volumes:
       - ./data:/data
+      # On a Tailscale node: lets the server test say whether each phone's path was direct or relayed.
+      # - /usr/bin/tailscale:/usr/bin/tailscale:ro
+      # - /var/run/tailscale:/var/run/tailscale
     environment:
       # Only phones from your household may register (its id is in each phone's status once a server is set).
       # FC_HOUSEHOLD: "0a1b2c3d"

@@ -23,6 +23,8 @@ Settings (environment):
     FC_EXPORT_TOKEN_FILE   the export API's token (default <FC_DATA>/export_token)
     FC_REPORT_PASSWORD_FILE  the report password's scrypt hash (default <FC_DATA>/report_password)
     FC_REPORT_HTML     the report page (default: report.html beside this file, else ../docs/report/index.html)
+    FC_TAILSCALE       the tailscale CLI, for the server test's path (default: tailscale). On a server that is itself a
+                       Tailscale node, a phone that comes over Tailscale learns whether its path was direct or relayed.
 """
 import base64
 import getpass
@@ -35,6 +37,7 @@ import json
 import os
 import re
 import secrets
+import subprocess
 import sys
 import threading
 import time
@@ -50,6 +53,7 @@ API_ALLOW = os.environ.get("FC_API_ALLOW", "0.0.0.0/0,::/0")
 OPEN_ALLOW = os.environ.get("FC_OPEN_ALLOW", "10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,127.0.0.0/8,::1/128,fc00::/7")
 EXPORT_TOKEN_FILE = Path(os.environ.get("FC_EXPORT_TOKEN_FILE", str(DATA / "export_token")))
 REPORT_PASSWORD_FILE = Path(os.environ.get("FC_REPORT_PASSWORD_FILE", str(DATA / "report_password")))
+TAILSCALE = os.environ.get("FC_TAILSCALE", "tailscale")
 HERE = Path(__file__).resolve().parent
 REPORT_HTML = Path(os.environ.get("FC_REPORT_HTML") or next(
     (p for p in (HERE / "report.html", HERE.parent / "docs" / "report" / "index.html") if p.is_file()), HERE / "report.html"))
@@ -77,6 +81,40 @@ def _nets(spec):
 
 
 API_NETS, OPEN_NETS = _nets(API_ALLOW), _nets(OPEN_ALLOW)
+# Tailscale's own addresses: a request from one of these came through the server's tailscaled.
+TAILNET_NETS = _nets("100.64.0.0/10,fd7a:115c:a1e0::/48")
+
+
+def tailnet_path(ip, status_json=None):
+    """How this server's tailscaled reaches the peer with Tailscale address `ip` right now.
+
+    path: direct (a UDP path, CurAddr set) | peer_relay | derp (active, no direct path) | idle | unknown.
+    Tailscale often starts a flow on DERP and moves to direct within seconds, so the app asks at both ends of a test.
+    """
+    none = {"path": "unknown", "derp_region": "", "direct_family": "", "direct_lan": None}
+    try:
+        if status_json is None:
+            out = subprocess.run([TAILSCALE, "status", "--json"], capture_output=True, timeout=8, check=True).stdout
+            status_json = out.decode("utf-8", "replace")
+        st = json.loads(status_json)
+    except Exception as e:  # CLI missing, daemon down, bad JSON
+        return {**none, "error": type(e).__name__}
+    for p in (st.get("Peer") or {}).values():
+        if ip not in (p.get("TailscaleIPs") or []):
+            continue
+        cur, relay, peer_relay = p.get("CurAddr") or "", p.get("Relay") or "", p.get("PeerRelay") or ""
+        if cur:
+            host = cur.rsplit(":", 1)[0].strip("[]")
+            try:
+                addr = ipaddress.ip_address(host)
+                family, lan = ("ipv6" if addr.version == 6 else "ipv4"), addr.is_private
+            except ValueError:
+                family, lan = "", None
+            return {"path": "direct", "derp_region": relay, "direct_family": family, "direct_lan": lan}
+        if peer_relay:
+            return {**none, "path": "peer_relay", "derp_region": relay}
+        return {**none, "path": "derp" if p.get("Active") else "idle", "derp_region": relay}
+    return none
 
 
 def devices_file():
@@ -379,11 +417,20 @@ class Handler(BaseHTTPRequestHandler):
     server_version = "familycoverage/1"
     protocol_version = "HTTP/1.1"
 
-    def _allowed(self, nets):
+    def _client_ip(self):
         ip = ipaddress.ip_address(self.client_address[0])
-        if ip.version == 6 and ip.ipv4_mapped:
-            ip = ip.ipv4_mapped
+        return ip.ipv4_mapped if ip.version == 6 and ip.ipv4_mapped else ip
+
+    def _allowed(self, nets):
+        ip = self._client_ip()
         return any(ip in n for n in nets)
+
+    def _test_path(self):
+        """The server test's path: through Tailscale, whether tailscaled has a direct path to this phone or relays."""
+        ip = self._client_ip()
+        if not any(ip in n for n in TAILNET_NETS):
+            return {"path": "not_tailscale", "derp_region": "", "direct_family": "", "direct_lan": None}
+        return tailnet_path(str(ip))
 
     def _send(self, code, body, ctype="application/json", extra=None):
         data = body if isinstance(body, bytes) else json.dumps(body).encode("utf-8")
@@ -557,6 +604,12 @@ class Handler(BaseHTTPRequestHandler):
             if self._approved_device() is None:
                 return None
             return self._send(200, {"bytes": received})
+        if path in ("/api/test/begin", "/api/test/end"):
+            if self._drain(MAX_TEST_UP) < 0:
+                return self._send(413, {"error": "body too large"})
+            if self._approved_device() is None:
+                return None
+            return self._send(200, self._test_path())
         try:
             length = int(self.headers.get("Content-Length", "0"))
         except ValueError:

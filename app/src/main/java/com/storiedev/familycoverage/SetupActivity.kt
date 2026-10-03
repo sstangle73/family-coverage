@@ -122,7 +122,7 @@ class SetupActivity : Activity() {
                     end = end,
                     server = Household.cleanServer(server.text.toString()),
                     places = existing?.places.orEmpty(),
-                )
+                ).withMembers(list)
                 val me = prefs.member
                 if (me != null && me !in list && Status.running) {
                     throw IllegalArgumentException("this phone belongs to $me: keep $me in the list, or stop recording first")

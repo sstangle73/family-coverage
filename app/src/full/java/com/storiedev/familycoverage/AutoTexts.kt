@@ -81,7 +81,7 @@ class AutoTexts(
 
     /** Whether this SIM can send silent texts: not on a network known to refuse them, and it hasn't refused one. */
     private fun simSilent(s: TelephonySampler.SubState): Boolean =
-        s.subId !in prefs.textNoSilentSubs && s.lastRow?.mccMnc !in TextMath.NO_SILENT_PLMNS
+        s.subId !in prefs.textNoSilentSubs && (s.knownMccMnc ?: s.lastRow?.mccMnc) !in TextMath.NO_SILENT_PLMNS
 
     /** (transport, destination) for one SIM's test: see TextMath.route. */
     private fun route(s: TelephonySampler.SubState): Pair<String, String>? = TextMath.route(
@@ -109,7 +109,7 @@ class AutoTexts(
         val nowMs = System.currentTimeMillis()
         val now = LocalDateTime.now()
         log.rollDay(now.toLocalDate().toString())
-        visits.refresh(prefs.household)
+        visits.refresh(prefs.household, prefs.member)
         expirePending(nowMs)
         val fix = log.currentFix()
         val here = fix?.let { visits.placeAt(it) }
@@ -119,12 +119,14 @@ class AutoTexts(
         flushDeferred()
         if (blocker() != null) return
         val v = visits.dwelled(Config.TEXT_DWELL_MS)
-        if (v != null && v.exchanges < Config.TEXT_VISIT_MAX && may(nowMs, now.toLocalTime(), manual = false) == null) {
+        if (v != null && visits.isMine(v.placeId) && v.exchanges < Config.TEXT_VISIT_MAX &&
+            may(nowMs, now.toLocalTime(), manual = false) == null
+        ) {
             v.exchanges++
             startExchange("place", v.placeId)
             return
         }
-        for (p in visits.places) for (time in p.times) {
+        for (p in visits.mine) for (time in p.times) {
             val slot = runCatching { LocalTime.parse(time) }.getOrNull() ?: continue
             val days = p.days.mapNotNull { TextMath.day(it) }.toSet()
             val key = "${now.toLocalDate()} ${p.id} $time"
@@ -141,7 +143,7 @@ class AutoTexts(
 
     override fun manual() {
         log.rollDay(LocalDate.now().toString())
-        visits.refresh(prefs.household)
+        visits.refresh(prefs.household, prefs.member)
         val why = (if (inCall()) "on a call" else null) ?: blocker() ?: may(System.currentTimeMillis(), LocalTime.now(), manual = true)
         if (why != null) {
             Status.lastText = "${LoggerService.clock(OffsetDateTime.now())} not sent: $why"
@@ -179,7 +181,7 @@ class AutoTexts(
         seen.addLast(key)
         while (seen.size > 100) seen.removeFirst()
         log.rollDay(r.at.toLocalDate().toString())
-        visits.refresh(prefs.household)
+        visits.refresh(prefs.household, prefs.member)
         val snap = log.snapshot(r.subId, null)
         val mine = if (r.role == "echo") pending["test:${r.testId}"] else null
         val rtt = mine?.let { Csv.round((System.currentTimeMillis() - it.sentMs) / 1000.0, 1) }
@@ -232,9 +234,10 @@ class AutoTexts(
             Status.lastText = "${LoggerService.clock(OffsetDateTime.now())} ${p.role} from ${p.snap.carrier ?: "?"}: " +
                 TextMath.sendResult(code)
         }
-        // The SIM's network refused a silent text while in service: it won't carry them. Remember that, and send this
-        // one again as a visible text (a new test id, so the refused attempt stays its own row).
-        if (p.transport == "data" && code in TextMath.SILENT_UNSUPPORTED && p.snap.serviceState == "IN_SERVICE") {
+        // The SIM's network refused a silent text while on a cell: it won't carry them. Remember that, and send this
+        // one again as a visible text (a new test id, so the refused attempt stays its own row). Not on Wi-Fi calling
+        // alone, where Android also says IN_SERVICE but a refusal says nothing about the network.
+        if (p.transport == "data" && code in TextMath.SILENT_UNSUPPORTED && p.snap.cellService == "IN_SERVICE") {
             prefs.textNoSilentSubs = prefs.textNoSilentSubs + p.subId
             TextBus.applyReceivers(context, prefs, running = true)
             val at = OffsetDateTime.now()

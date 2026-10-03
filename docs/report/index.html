@@ -266,11 +266,13 @@ async function loadExport(data, name, files) {
           if (!m) data.plmn.set(plmn, m = new Map());
           m.set(key, (m.get(key) || 0) + 1);
         }
-        // cell_service (Family Coverage 0.2+) is the cellular registration itself; older files only have Android's
-        // service_state, which also says IN_SERVICE for Wi-Fi calling with no cell (finishLoad sorts those out).
+        // cell_service is the cellular registration itself. Coverage Log's files only have Android's service_state,
+        // which also says IN_SERVICE for Wi-Fi calling with no cell (finishLoad sorts those out).
         const cellService = col("cell_service") >= 0 ? r[col("cell_service")] : "";
         S.svc.push(SVC[cellService || r[col("service_state")]] ?? 2);
-        S.exact.push(cellService ? 1 : 0);
+        // exact: 1 where the app recorded cell_service; 2 where that says no cell while Android says IN_SERVICE, which
+        // only Wi-Fi calling alone does (counted for the notes).
+        S.exact.push(!cellService ? 0 : cellService !== "IN_SERVICE" && r[col("service_state")] === "IN_SERVICE" ? 2 : 1);
         const rat = r[col("rat")];
         S.nr.push(rat === "NR_SA" || rat === "NR_NSA" ? 1 : 0);
         S.norat.push(!rat || rat === "NONE" ? 1 : 0);
@@ -352,6 +354,7 @@ function finishLoad(data) {
   for (let i = 0; i < S.ts.length; i++) {
     const fresh = S.cage[i] <= (isMoving(S, i) ? 30 : 300);
     if (!fresh) S.rsrp[i] = NaN;
+    if (S.exact[i] === 2) S.wonly[i] = 1;
     if (S.svc[i] !== 1 || S.exact[i] || !S.iw[i]) continue;
     const own = ownCode.get(S.dev[i] + "|" + S.sub[i]);
     const foreign = S.plmn[i] && own && S.plmn[i] !== own && !S.roam[i];
@@ -508,8 +511,9 @@ function tallyTests(data, places) {
       const s = get(b, r.net); s.server++;
       if (r.result === "OK") {
         s.serverOk++; s.serverLatency.push(num(r.latency_ms));
-        // Coverage Log's rows say how the server reached the phone at the end: direct, or through a relay.
-        if (r.path_end) { s.pathKnown++; if (r.path_end === "direct") s.direct++; }
+        // Through Tailscale, the rows say how the server reached the phone at the end: direct, or through a relay.
+        // (not_tailscale, unknown and idle say nothing about that.)
+        if (["direct", "derp", "peer_relay"].includes(r.path_end)) { s.pathKnown++; if (r.path_end === "direct") s.direct++; }
       }
     }
   }

@@ -54,6 +54,12 @@ Stand at each place that matters and tap **Add the spot you're at**. Give it a n
 counts (150 m suits a house; 250 to 500 m a school campus or an office park). Share the household again afterwards,
 and on the other phones choose **Scan an updated code**, so every phone knows every place.
 
+Two choices for test texts (step 6), when adding a place or later with **Edit**:
+- **Whose test texts it's for.** A place for some members only, such as one parent's office, starts tests only on
+  their phones. The report still compares networks there with everyone's readings.
+- **Fallback times**, such as `8:15, 15:20` on weekdays for the school run: at each time, a test goes out wherever
+  the phone is, unless one went out in the hour before.
+
 ## 6. Test texts (optional)
 
 Test texts check that texts get through, on every line, both ways. Choose two phones, usually the two that are apart

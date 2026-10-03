@@ -76,6 +76,8 @@ object Tables {
         "nr_band", "nr_arfcn", "nr_pci", "nr_rsrp", "nr_rsrq", "nr_sinr", "cell_age_s",
         "lat", "lon", "accuracy_m", "altitude_m", "speed_mps", "fix_age_s",
         "display_override", "cc_count", "bw_mhz",
+        // cell_service: the cellular registration itself (CellMath.cellService); mode: MOVING or STILL when written.
+        "cell_service", "mode",
     )
     val TRACK = listOf("ts", "member", "lat", "lon", "accuracy_m", "altitude_m", "speed_mps", "bearing_deg", "provider")
     // CsvStore writes each row in its file's own header order, so a file begun by an older build stays consistent
@@ -91,6 +93,8 @@ object Tables {
         "ts", "member", "sub_id", "sub_label", "carrier", "mcc_mnc", "rat", "wifi_connected", "vpn_active",
         "cell_ipv6", "lat", "lon", "accuracy_m", "latency_ms", "jitter_ms", "down_mbps", "up_mbps", "down_bytes",
         "up_bytes", "result",
+        // How the server reached the phone at the start and end of the test, when it can tell (a server on Tailscale).
+        "path_start", "path_end", "derp_region", "direct_family", "direct_lan",
     )
     /** Mobile data per interval, attributed to the SIM carrying data. */
     val USAGE = listOf(
@@ -214,6 +218,21 @@ object CellMath {
             wwan.any { it.cs } -> "CS"
             else -> "NONE"
         }
+    }
+
+    /**
+     * cell_service: the cellular registration alone. Android's ServiceState says IN_SERVICE for a line registered only
+     * for Wi-Fi calling (IWLAN), with no cell at all. This says IN_SERVICE only while a cellular (WWAN) registration is
+     * in place, for voice or data, at home or roaming; EMERGENCY_ONLY and POWER_OFF come from ServiceState, and anything
+     * else, Wi-Fi calling alone included, is OUT_OF_SERVICE. A device that lists no registrations falls back to
+     * ServiceState's own state.
+     */
+    fun cellService(state: Int, regs: List<Reg>): String = when {
+        state == 3 -> "POWER_OFF"
+        regs.isEmpty() -> serviceState(state, dataRegistered = false)
+        regs.any { !it.wlan && it.registered } -> "IN_SERVICE"
+        state == 2 -> "EMERGENCY_ONLY"
+        else -> "OUT_OF_SERVICE"
     }
 
     /**

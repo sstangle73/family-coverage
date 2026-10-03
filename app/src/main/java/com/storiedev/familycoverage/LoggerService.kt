@@ -359,11 +359,11 @@ class LoggerService : Service() {
             val choices = mutableListOf<Pair<Int, String>>()
             for (s in sampler.subscriptions) {
                 val r = sampler.read(s)
-                store.append("samples", t, TelephonySampler.values(t, member, r, wifi, fix))
+                store.append("samples", t, TelephonySampler.values(t, member, r, wifi, fix, tracker.isMoving))
                 val data = if (r.dataSim) " (data)" else ""
                 val icon = r.displayOverride?.takeIf { it != "NONE" }?.let { " [$it]" } ?: ""
                 lines += "${r.carrier ?: "SIM ${r.subId}"}$data: ${r.rat}$icon ${r.rsrp?.let { "$it dBm" } ?: "-"} " +
-                    "${r.serviceState} voice ${r.voiceTransport}"
+                    "${r.cellService} voice ${r.voiceTransport}"
                 choices += r.subId to r.displayName
             }
             Status.sims = if (lines.isEmpty()) "no active SIM (phone permission?)" else lines.joinToString("\n")
@@ -589,10 +589,13 @@ class LoggerService : Service() {
                     fix?.let { Csv.round(it.latitude, 7) }, fix?.let { Csv.round(it.longitude, 7) },
                     fix?.takeIf { it.hasAccuracy() }?.let { Csv.round(it.accuracy.toDouble(), 1) },
                     r.latencyMs, r.jitterMs, r.downMbps, r.upMbps, r.downBytes, r.upBytes, r.result,
+                    r.start?.path, r.end?.path, r.end?.derpRegion ?: r.start?.derpRegion,
+                    r.end?.directFamily ?: r.start?.directFamily, r.end?.directLan ?: r.start?.directLan,
                 ),
             )
+            val route = r.start?.path?.takeIf { it != "not_tailscale" }?.let { ", Tailscale $it -> ${r.end?.path ?: "-"}" } ?: ""
             Status.lastServer = "${clock(t)} ${r.result}: ${r.downMbps ?: "-"} down, ${r.upMbps ?: "-"} up Mbps, " +
-                "${r.latencyMs ?: "-"} ms" + (r.error?.let { "\n  $it" } ?: "")
+                "${r.latencyMs ?: "-"} ms$route" + (r.error?.let { "\n  $it" } ?: "")
         } catch (e: Exception) {
             Status.lastServer = "server test failed: ${e.javaClass.simpleName}"
         }

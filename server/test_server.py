@@ -120,6 +120,30 @@ class ServerTest(unittest.TestCase):
         code, body, _ = self.call("POST", "/api/test/up", None, key=KEY, raw=bytes(125_000),
                                   headers={"Content-Type": "application/octet-stream"})
         self.assertEqual({"bytes": 125_000}, json.loads(body))
+        # The path: this request didn't come over Tailscale.
+        self.assertEqual(401, self.call("POST", "/api/test/begin", None, raw=b"")[0])
+        code, body, _ = self.call("POST", "/api/test/begin", None, key=KEY, raw=b"")
+        self.assertEqual(200, code)
+        self.assertEqual("not_tailscale", json.loads(body)["path"])
+        self.assertEqual("not_tailscale", json.loads(self.call("POST", "/api/test/end", None, key=KEY, raw=b"")[1])["path"])
+
+    def test_tailnet_path_reads_tailscale_status(self):
+        status = json.dumps({"Peer": {
+            "a": {"TailscaleIPs": ["100.101.1.2", "fd7a:115c:a1e0::1"], "CurAddr": "8.8.8.8:41641", "Relay": "ord"},
+            "b": {"TailscaleIPs": ["100.101.1.3"], "CurAddr": "[fd00::5]:41641", "Relay": "ord"},
+            "c": {"TailscaleIPs": ["100.101.1.4"], "CurAddr": "", "Relay": "dfw", "Active": True},
+            "d": {"TailscaleIPs": ["100.101.1.5"], "CurAddr": "", "Relay": "dfw", "PeerRelay": "100.101.1.9:7777"},
+            "e": {"TailscaleIPs": ["100.101.1.6"], "Relay": "ord"},
+        }})
+        self.assertEqual({"path": "direct", "derp_region": "ord", "direct_family": "ipv4", "direct_lan": False},
+                         srv.tailnet_path("100.101.1.2", status))
+        self.assertEqual({"path": "direct", "derp_region": "ord", "direct_family": "ipv6", "direct_lan": True},
+                         srv.tailnet_path("100.101.1.3", status))
+        self.assertEqual("derp", srv.tailnet_path("100.101.1.4", status)["path"])
+        self.assertEqual("peer_relay", srv.tailnet_path("100.101.1.5", status)["path"])
+        self.assertEqual("idle", srv.tailnet_path("100.101.1.6", status)["path"])
+        self.assertEqual("unknown", srv.tailnet_path("100.101.1.7", status)["path"])
+        self.assertEqual("unknown", srv.tailnet_path("100.101.1.2", "not json")["path"])
 
     def test_export_api_and_zips(self):
         self.register()

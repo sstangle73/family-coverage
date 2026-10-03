@@ -14,7 +14,8 @@ It's one Python file with no dependencies beyond the standard library.
   after checking its device id on the phone. The server stores only a hash of each install's key.
 - **Serves the report live**, at `/report/`, behind a password you set.
 - **Answers the server test:** `/api/test/ping`, a download (`/api/test/down?bytes=N`, at most 2 MB) and an upload
-  (at most 1 MB), for approved installs only.
+  (at most 1 MB), for approved installs only. `POST /api/test/begin` and `/api/test/end` answer with how the
+  server reaches the phone: through Tailscale, whether `tailscale status` shows a direct path or a relay.
 - **Writes the same zips the phones export** (`export-zips`), so the report page opens them unchanged.
 - **Serves a read-only export API** with its own token, plus `/healthz` and Prometheus `/metrics` for private
   networks only.
@@ -91,6 +92,14 @@ which honours `Range: bytes=N-`) needs the token that `new-export-token` writes 
 | `FC_EXPORT_TOKEN_FILE` | `<FC_DATA>/export_token` | the export API's token |
 | `FC_REPORT_PASSWORD_FILE` | `<FC_DATA>/report_password` | the report password's scrypt hash |
 | `FC_REPORT_HTML` | `report.html` beside the server, else `docs/report/index.html` | the report page |
+| `FC_TAILSCALE` | `tailscale` | the Tailscale CLI, for the server test's path |
+
+### On Tailscale
+
+When the server runs on a Tailscale node and the phones reach it at its Tailscale address (or MagicDNS name), each
+server test records whether the phone's path was direct or relayed. The server runs `tailscale status --json`, so
+in Docker give the container the host's CLI and its socket (the two commented lines in `compose.yaml`). Without
+them the path is `unknown`; tests that don't come through Tailscale say `not_tailscale`.
 
 ## Files
 

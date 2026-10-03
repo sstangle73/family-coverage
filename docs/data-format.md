@@ -21,13 +21,18 @@ The first two columns are always `ts` and `member` (the household member the pho
   "member": "Sam", "device_id": "3f9c0e41d2a7b655", "exported_at": "...",
   "household": { "id": "0a1b2c3d", "name": "The Smiths", "members": ["Alex", "Sam"], "end": "2026-11-15",
                  "server": "https://coverage.example.com",
-                 "places": [{ "id": "home", "name": "Home", "lat": 42.36, "lon": -71.05, "r": 150 }] },
+                 "places": [{ "id": "home", "name": "Home", "lat": 42.36, "lon": -71.05, "r": 150 },
+                            { "id": "school", "name": "School", "lat": 42.37, "lon": -71.06, "r": 250,
+                              "days": ["MON", "TUE", "WED", "THU", "FRI"], "times": ["08:15", "15:20"],
+                              "m": ["Sam"] }] },
   "tables": { "samples": ["ts", "member", "..."] },
   "files": ["csv/samples-2026-10-01.csv"]
 }
 ```
 
-`device_id` names the install (a new install is a new id). `server` is absent when the household has none.
+`device_id` names the install (a new install is a new id). `server` is absent when the household has none. A
+place's `r` is its radius in metres; `days` and `times` are its fallback times for test texts; `m` names the members
+whose test texts it's for (absent: everyone's).
 
 ## samples: each SIM's state
 
@@ -36,12 +41,12 @@ One row per SIM per reading: every 10 seconds while moving, about every 2 minute
 | Column | Meaning |
 |---|---|
 | `sub_id`, `sub_label` | Android's id for the SIM, and its label in Settings |
-| `carrier`, `mcc_mnc` | The SIM's carrier, and the network it's registered on (MCC+MNC) |
+| `carrier`, `mcc_mnc` | The SIM's carrier, and the network it's registered on (MCC+MNC): blank without a cell |
 | `data_sim` | `true` on the SIM carrying mobile data |
-| `service_state` | `IN_SERVICE`, `OUT_OF_SERVICE`, `EMERGENCY_ONLY`, or `POWER_OFF` (airplane mode, not a dead spot) |
+| `service_state` | Android's state: `IN_SERVICE`, `OUT_OF_SERVICE`, `EMERGENCY_ONLY`, or `POWER_OFF` (airplane mode, not a dead spot). Android also says `IN_SERVICE` for a line on Wi-Fi calling alone: `cell_service` doesn't |
 | `voice_transport` | How a call would go: `LTE`/`NR` (VoLTE/VoNR), `IWLAN` (Wi-Fi or cross-SIM calling), `CS`, `NONE` |
 | `roaming`, `wifi_connected` | |
-| `rat` | `NR_SA` (5G standalone), `NR_NSA` (LTE with a 5G leg), `LTE`, `UMTS`, `NONE` |
+| `rat` | `NR_SA` (5G standalone), `NR_NSA` (LTE with a 5G leg), `LTE`, `UMTS`, `NONE` (no cell, Wi-Fi calling alone included) |
 | `band`, `arfcn`, `pci`, `cell_id`, `tac` | The serving cell |
 | `rsrp`, `rsrq`, `sinr` | Signal (dBm, dB, dB): RSRP −80 is strong, −110 weak, −120 barely usable |
 | `nr_band` … `nr_sinr` | The 5G leg, on NR_NSA |
@@ -49,6 +54,11 @@ One row per SIM per reading: every 10 seconds while moving, about every 2 minute
 | `lat`, `lon`, `accuracy_m`, `altitude_m`, `speed_mps`, `fix_age_s` | The location. While still, the best fix of the still period |
 | `display_override` | The status bar's extra icon: `NR_NSA` (5G), `NR_ADVANCED` (5G+/UW/UC), `LTE_CA`, … |
 | `cc_count`, `bw_mhz` | Serving carriers and their total bandwidth |
+| `cell_service` | The cellular registration itself: `IN_SERVICE` only with a cell (voice or data, at home or roaming); `OUT_OF_SERVICE` without one, Wi-Fi calling alone included; `EMERGENCY_ONLY`; `POWER_OFF`. Use this, not `service_state`, for coverage |
+| `mode` | The app's own `MOVING` or `STILL` when it wrote the row. It turns `MOVING` at once on a fix over 100 m from where the phone sat, and `STILL` once the fixes have stayed within about 25 m for 3 minutes. Recording starts in `MOVING` |
+
+Without a cell, the cell columns (`band` to `nr_sinr`, `cell_age_s`, `display_override`, `cc_count`, `bw_mhz`) are
+blank, even where the modem still lists a cell it camps on.
 
 ## track: the GPS track
 
@@ -73,6 +83,14 @@ through. `test_path` is `cellular_bound`, `default` or `exit_node`.
 
 Only with a server set, off Wi-Fi, hourly moving and every 3 hours still: latency, 500 KB down, 125 KB up.
 `result` adds `NOT_APPROVED` (approve the install on the server) and `REFUSED` (plain http to a public address).
+
+`path_start` and `path_end` say how the server reached the phone at the test's first and last request, which only
+a server that is itself a Tailscale node can tell: `direct`, `derp` (relayed through Tailscale's servers),
+`peer_relay`, `idle` or `unknown`; `not_tailscale` when the test didn't come through Tailscale; blank from a server
+too old to say. Tailscale often starts a connection relayed and goes direct within seconds, so both ends are
+recorded. From the end of the test, falling back to the start: `derp_region` is the phone's home relay region
+(such as `ord`), `direct_family` is `ipv4` or `ipv6`, and `direct_lan` says whether the direct path was a private
+address (the phone was at home).
 
 ## usage: mobile data
 

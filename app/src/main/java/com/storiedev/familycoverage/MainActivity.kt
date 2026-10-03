@@ -348,9 +348,10 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun placeDialog(fix: Location) {
+    /** Adds a place centred on [fix], or edits [existing]: everything but where it is. */
+    private fun placeDialog(fix: Location?, existing: Place? = null) {
         val h = prefs.household ?: return
-        if (h.places.size >= Household.MAX_PLACES) {
+        if (existing == null && h.places.size >= Household.MAX_PLACES) {
             Ui.toast(this, "That's the most places a household can have (${Household.MAX_PLACES}).")
             return
         }
@@ -359,43 +360,110 @@ class MainActivity : Activity() {
         val name = EditText(this).apply {
             hint = "Home, school, work..."
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_WORDS
+            setText(existing?.name ?: "")
         }
         box.addView(name)
         box.addView(Ui.text(this, "How far around it counts:", 13f, top = 8))
-        val radii = listOf(100, 150, 250, 500)
+        val radius = existing?.radiusM?.toInt() ?: 150
         val group = RadioGroup(this).apply { orientation = RadioGroup.HORIZONTAL }
-        for (r in radii) {
+        for (r in (listOf(100, 150, 250, 500) + radius).distinct().sorted()) {
             group.addView(RadioButton(this).apply {
                 id = View.generateViewId()
                 text = "$r m"
                 tag = r
-                isChecked = r == 150
+                isChecked = r == radius
             })
         }
         box.addView(group)
-        val accuracy = if (fix.hasAccuracy()) "±${fix.accuracy.toInt()} m" else "accuracy unknown"
-        box.addView(Ui.text(this, "Your location now ($accuracy) is the centre.", 12f))
-        AlertDialog.Builder(this)
-            .setTitle("Add this place")
-            .setView(box)
-            .setPositiveButton("Add") { _, _ ->
-                val label = Household.cleanName(name.text.toString())
-                if (label == null) {
-                    Ui.toast(this, "Give the place a name.")
-                    return@setPositiveButton
-                }
-                val current = prefs.household ?: return@setPositiveButton
-                val radius = (group.findViewById<RadioButton>(group.checkedRadioButtonId)?.tag as? Int ?: 150).toDouble()
-                val place = Place(
-                    id = Household.placeId(label, current.places.map { it.id }.toSet()),
-                    name = label, lat = Csv.round(fix.latitude, 6), lon = Csv.round(fix.longitude, 6), radiusM = radius,
-                )
-                prefs.household = current.withPlace(place)
-                Ui.toast(this, "Added $label. Share the household again so the other phones get it.")
-                render()
+        if (fix != null) {
+            val accuracy = if (fix.hasAccuracy()) "±${fix.accuracy.toInt()} m" else "accuracy unknown"
+            box.addView(Ui.text(this, "Your location now ($accuracy) is the centre.", 12f))
+        }
+        // Whose tests: every member ticked means everyone's, including members added later.
+        val memberBoxes = if (h.members.size > 1) {
+            box.addView(Ui.text(this, "Whose test texts it's for:", 13f, top = 8))
+            h.members.map { m ->
+                CheckBox(this).apply {
+                    text = m
+                    isChecked = existing?.isFor(m) ?: true
+                }.also { box.addView(it) }
             }
+        } else {
+            emptyList()
+        }
+        box.addView(
+            Ui.text(
+                this,
+                "Fallback times (optional): on these days, a test text goes out at each time unless one went out in " +
+                    "the hour before, wherever the phone is. For a regular trip, such as the school run.",
+                13f,
+                top = 8,
+            ),
+        )
+        val dayBoxes = Household.DAYS.map { d ->
+            CheckBox(this).apply {
+                text = d.lowercase(Locale.US).replaceFirstChar { it.uppercase() }
+                isChecked = existing?.days?.contains(d) ?: (d != "SAT" && d != "SUN")
+            }
+        }
+        for (week in listOf(dayBoxes.take(4), dayBoxes.drop(4))) {
+            box.addView(LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                for (b in week) addView(b)
+            })
+        }
+        val times = EditText(this).apply {
+            hint = "Times, such as 8:15, 15:20"
+            inputType = InputType.TYPE_CLASS_DATETIME or InputType.TYPE_DATETIME_VARIATION_TIME
+            setText(existing?.times?.joinToString(", ") ?: "")
+        }
+        box.addView(times)
+        val error = Ui.text(this, "", 13f)
+        box.addView(error)
+        val dialog = AlertDialog.Builder(this)
+            .setTitle(if (existing == null) "Add this place" else "Edit ${existing.name}")
+            .setView(ScrollView(this).apply { addView(box) })
+            .setPositiveButton(if (existing == null) "Add" else "Save", null)
             .setNegativeButton("Cancel", null)
-            .show()
+            .create()
+        dialog.setOnShowListener {
+            // Set here rather than on the builder, so a mistake keeps the dialog open.
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+                try {
+                    val label = Household.cleanName(name.text.toString())
+                        ?: throw IllegalArgumentException("give the place a name")
+                    val slots = Household.cleanTimes(times.text.toString())
+                    val days = Household.DAYS.filterIndexed { i, _ -> dayBoxes[i].isChecked }
+                    require(slots.isEmpty() || days.isNotEmpty()) { "pick the days for those times" }
+                    val chosen = memberBoxes.filter { it.isChecked }.map { it.text.toString() }
+                    require(memberBoxes.isEmpty() || chosen.isNotEmpty()) { "pick at least one member" }
+                    val current = prefs.household ?: return@setOnClickListener
+                    val r = (group.findViewById<RadioButton>(group.checkedRadioButtonId)?.tag as? Int ?: 150).toDouble()
+                    val members = if (chosen.size == memberBoxes.size) emptyList() else chosen
+                    val place = when {
+                        existing != null -> existing.copy(
+                            name = label, radiusM = r, days = if (slots.isEmpty()) emptyList() else days,
+                            times = slots, members = members,
+                        )
+                        fix != null -> Place(
+                            id = Household.placeId(label, current.places.map { it.id }.toSet()),
+                            name = label, lat = Csv.round(fix.latitude, 6), lon = Csv.round(fix.longitude, 6),
+                            radiusM = r, days = if (slots.isEmpty()) emptyList() else days, times = slots,
+                            members = members,
+                        )
+                        else -> return@setOnClickListener
+                    }
+                    prefs.household = current.withPlace(place)
+                    Ui.toast(this, "${if (existing == null) "Added" else "Saved"} $label. Share the household " +
+                        "again so the other phones get it.")
+                    dialog.dismiss()
+                    render()
+                } catch (e: IllegalArgumentException) {
+                    error.text = "✗  ${e.message?.replaceFirstChar { it.uppercase() }}."
+                }
+            }
+        }
+        dialog.show()
     }
 
     private fun renderPlaces() {
@@ -414,9 +482,12 @@ class MainActivity : Activity() {
                 Location.distanceBetween(it.latitude, it.longitude, p.lat, p.lon, d)
                 if (d[0] < 1000) " · ${d[0].toInt()} m away" else String.format(Locale.US, " · %.1f km away", d[0] / 1000)
             } ?: ""
+            val who = if (p.members.isEmpty()) "" else "\n   for ${p.members.joinToString(", ")}"
+            val slots = Household.describeTimes(p)?.let { "\n   tests $it" } ?: ""
             val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-            row.addView(Ui.text(this, "● ${p.name} (${p.radiusM.toInt()} m)$distance", 14f),
+            row.addView(Ui.text(this, "● ${p.name} (${p.radiusM.toInt()} m)$distance$who$slots", 14f),
                 LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+            row.addView(Ui.button(this, "Edit") { placeDialog(null, p) })
             row.addView(Ui.button(this, "Remove") {
                 Ui.confirm(this, "Remove ${p.name}?", "The report stops comparing networks there, and test texts stop " +
                     "going out there. Recorded data isn't touched.", "Remove") {

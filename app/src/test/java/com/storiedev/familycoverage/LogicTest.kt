@@ -28,7 +28,7 @@ class LogicTest {
         server = "https://coverage.example.com",
         places = listOf(
             Place("home", "Home", 42.3601, -71.0589),
-            Place("school", "School", 42.37, -71.05, 250.0, listOf("MON", "TUE"), listOf("08:15")),
+            Place("school", "School", 42.37, -71.05, 250.0, listOf("MON", "TUE"), listOf("08:15"), listOf("Sam", "Jo")),
         ),
     )
 
@@ -84,6 +84,42 @@ class LogicTest {
         assertEquals(Place.MIN_RADIUS_M, p.radiusM, 0.0) // clamped
         assertEquals(listOf("MON"), p.days)
         assertEquals(listOf("08:15"), p.times)
+        assertEquals(emptyList<String>(), p.members)
+        // A place's members must be the household's: others are dropped.
+        val m = JSONObject(household.toJson().toString())
+        m.getJSONArray("places").getJSONObject(1).put("m", org.json.JSONArray(listOf("Sam", "Pat", " Jo ")))
+        assertEquals(listOf("Sam", "Jo"), Household.fromJson(m).places[1].members)
+    }
+
+    @Test
+    fun placesForSomeMembersAndFallbackTimes() {
+        val school = household.places[1]
+        assertTrue(school.isFor("Sam"))
+        assertFalse(school.isFor("Alex"))
+        assertTrue(household.places[0].isFor("Alex")) // no members named: everyone's
+        // Members change: a place keeps the ones still there, and with none left it's everyone's.
+        assertEquals(listOf("Sam"), household.withMembers(listOf("Alex", "Sam")).places[1].members)
+        assertEquals(emptyList<String>(), household.withMembers(listOf("Alex")).places[1].members)
+        // Editing a place keeps its spot in the list.
+        val renamed = household.withPlace(household.places[0].copy(name = "Our house"))
+        assertEquals(listOf("home", "school"), renamed.places.map { it.id })
+        assertEquals("Our house", renamed.places[0].name)
+        // Times as people type them.
+        assertEquals(listOf("08:15", "15:20"), Household.cleanTimes(" 15:20, 8:15 8.15"))
+        assertEquals(emptyList<String>(), Household.cleanTimes("  "))
+        for (bad in listOf("8", "24:00", "8:60", "quarter past", "1,2,3,4,5,6,7".split(",").joinToString(" ") { "0$it:00" })) {
+            try {
+                Household.cleanTimes(bad)
+                fail("accepted $bad")
+            } catch (expected: IllegalArgumentException) {
+            }
+        }
+        fun times(days: List<String>, vararg t: String) = Household.describeTimes(school.copy(days = days, times = t.toList()))
+        assertEquals("Mon-Fri 08:15, 15:20", times(listOf("MON", "TUE", "WED", "THU", "FRI"), "08:15", "15:20"))
+        assertEquals("Sat, Sun 10:00", times(listOf("SUN", "SAT"), "10:00"))
+        assertEquals("every day 07:00", times(Household.DAYS, "07:00"))
+        assertEquals("Mon, Wed, Fri 07:00", times(listOf("MON", "WED", "FRI"), "07:00"))
+        assertNull(times(listOf("MON")))
     }
 
     @Test
@@ -186,6 +222,22 @@ class LogicTest {
     }
 
     @Test
+    fun cellServiceIsNotWifiCalling() {
+        fun reg(wlan: Boolean, registered: Boolean = true) =
+            CellMath.Reg(wlan = wlan, cs = !wlan, ps = true, registered = registered, tech = CellMath.NETWORK_TYPE_LTE)
+        // Android says IN_SERVICE for a line on Wi-Fi calling alone; the cell says otherwise.
+        assertEquals("OUT_OF_SERVICE", CellMath.cellService(0, listOf(reg(wlan = true), reg(wlan = false, registered = false))))
+        assertEquals("OUT_OF_SERVICE", CellMath.cellService(0, listOf(reg(wlan = true))))
+        assertEquals("IN_SERVICE", CellMath.cellService(0, listOf(reg(wlan = true), reg(wlan = false))))
+        assertEquals("IN_SERVICE", CellMath.cellService(1, listOf(reg(wlan = false)))) // data-only registration
+        assertEquals("EMERGENCY_ONLY", CellMath.cellService(2, listOf(reg(wlan = false, registered = false))))
+        assertEquals("POWER_OFF", CellMath.cellService(3, listOf(reg(wlan = true))))
+        // No registrations listed: ServiceState's own word.
+        assertEquals("IN_SERVICE", CellMath.cellService(0, emptyList()))
+        assertEquals("OUT_OF_SERVICE", CellMath.cellService(1, emptyList()))
+    }
+
+    @Test
     fun ratRules() {
         fun rat(nr: Boolean = false, lte: Boolean = false, leg: Boolean = false, umts: Boolean = false, ps: Int? = null, st: String = "IN_SERVICE") =
             CellMath.rat(st, nr, lte, leg, umts, ps)
@@ -274,9 +326,9 @@ class LogicTest {
 
     @Test
     fun tablesMatchTheDataFormat() {
-        assertEquals(36, Tables.SAMPLES.size)
+        assertEquals(38, Tables.SAMPLES.size)
         assertEquals(25, Tables.TESTS.size)
-        assertEquals(20, Tables.SERVER.size)
+        assertEquals(25, Tables.SERVER.size)
         assertEquals(14, Tables.USAGE.size)
         assertEquals(18, Tables.CHECKS.size)
         assertEquals(18, Tables.EVENTS.size)

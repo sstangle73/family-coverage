@@ -15,6 +15,7 @@ import android.os.Handler
 import android.os.Looper
 import android.os.PowerManager
 import android.text.InputType
+import android.view.Gravity
 import android.view.View
 import android.widget.Button
 import android.widget.CheckBox
@@ -50,6 +51,9 @@ class MainActivity : Activity() {
     private var shownSims: List<Pair<Int, String>> = emptyList()
     private var shownEventAt = 0L
     private var shownPlaces: List<Place>? = null
+    private var shownSteps: List<Pair<String, Boolean>>? = null
+    private var shownPlacesLocated = false
+    private lateinit var uploadButton: Button
     private var consentShown = false
     private var settingConsent = false
     private val io = Executors.newSingleThreadExecutor()
@@ -143,8 +147,10 @@ class MainActivity : Activity() {
         root.addView(
             Ui.text(
                 c,
-                "Samsung: also add Family Coverage to Settings > Battery > Background usage limits > Never sleeping " +
-                    "apps. A VPN (Tailscale, say) can stay on: carrier tests then run whenever you're off Wi-Fi.",
+                "Android asks the Phone step as \"make and manage phone calls\": the app only reads each SIM's " +
+                    "network and signal, and never makes, answers or reads calls. Samsung: also add Family Coverage " +
+                    "to Settings > Battery > Background usage limits > Never sleeping apps. A VPN (Tailscale, say) can " +
+                    "stay on: carrier tests then run whenever you're off Wi-Fi.",
                 13f,
                 top = 8,
             ),
@@ -220,7 +226,7 @@ class MainActivity : Activity() {
         )
         root.addView(Ui.button(c, "Export the data") { export() })
         root.addView(Ui.button(c, "Open the report page") { Ui.openUrl(c, BuildConfig.SITE_URL + "report/") })
-        root.addView(Ui.button(c, "Upload to the server now") {
+        uploadButton = Ui.button(c, "Upload to the server now") {
             if (prefs.household?.server == null) {
                 Ui.toast(c, "This household has no server: the data stays on the phone.")
             } else if (Status.running) {
@@ -229,7 +235,8 @@ class MainActivity : Activity() {
             } else {
                 Ui.toast(c, "Start recording first.")
             }
-        })
+        }
+        root.addView(uploadButton)
         root.addView(Ui.button(c, "Delete the recorded data") { deleteData() })
         dataStatus = Ui.text(c, "", 13f)
         root.addView(dataStatus)
@@ -252,7 +259,7 @@ class MainActivity : Activity() {
             root.addView(Ui.button(c, "☕  Buy me a coffee") { Ui.openUrl(c, BuildConfig.COFFEE_URL) })
         }
 
-        setContentView(ScrollView(c).apply { addView(root) })
+        Ui.show(this, ScrollView(c).apply { addView(root) })
         consentShown = prefs.consentAt == null
     }
 
@@ -403,7 +410,8 @@ class MainActivity : Activity() {
         val dayBoxes = Household.DAYS.map { d ->
             CheckBox(this).apply {
                 text = d.lowercase(Locale.US).replaceFirstChar { it.uppercase() }
-                isChecked = existing?.days?.contains(d) ?: (d != "SAT" && d != "SUN")
+                // A place without times has no days of its own yet: start from weekdays, as a new place does.
+                isChecked = if (existing?.times?.isNotEmpty() == true) d in existing.days else d != "SAT" && d != "SUN"
             }
         }
         for (week in listOf(dayBoxes.take(4), dayBoxes.drop(4))) {
@@ -414,7 +422,8 @@ class MainActivity : Activity() {
         }
         val times = EditText(this).apply {
             hint = "Times, such as 8:15, 15:20"
-            inputType = InputType.TYPE_CLASS_DATETIME or InputType.TYPE_DATETIME_VARIATION_TIME
+            // Plain text: Android's time keyboard has no comma or space, so "8:15, 15:20" couldn't be typed.
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
             setText(existing?.times?.joinToString(", ") ?: "")
         }
         box.addView(times)
@@ -468,8 +477,12 @@ class MainActivity : Activity() {
 
     private fun renderPlaces() {
         val places = prefs.household?.places.orEmpty()
-        if (places == shownPlaces) return
+        // Rebuilt when the places change, and once a location arrives (for the distances); not on every refresh,
+        // which would lose taps on Edit and Remove.
+        val located = Status.lastFix != null
+        if (places == shownPlaces && located == shownPlacesLocated) return
         shownPlaces = places
+        shownPlacesLocated = located
         placesList.removeAllViews()
         if (places.isEmpty()) {
             placesList.addView(Ui.text(this, "No places yet.", 13f))
@@ -484,7 +497,12 @@ class MainActivity : Activity() {
             } ?: ""
             val who = if (p.members.isEmpty()) "" else "\n   for ${p.members.joinToString(", ")}"
             val slots = Household.describeTimes(p)?.let { "\n   tests $it" } ?: ""
-            val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+            // Not baseline-aligned: that clipped a place's third line (its tests) beside the buttons.
+            val row = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                isBaselineAligned = false
+                gravity = Gravity.CENTER_VERTICAL
+            }
             row.addView(Ui.text(this, "● ${p.name} (${p.radiusM.toInt()} m)$distance$who$slots", 14f),
                 LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
             row.addView(Ui.button(this, "Edit") { placeDialog(null, p) })
@@ -606,18 +624,25 @@ class MainActivity : Activity() {
         renderEvents()
         renderPlaces()
         textsUi.render()
-        steps.removeAllViews()
-        for (s in setupSteps.filter { it.visible() }) {
-            val ok = s.done()
-            steps.addView(Button(this).apply {
-                // A glyph and a word, never colour alone.
-                text = if (ok) "✓  ${s.label}: done" else "✗  ${s.label}: tap to allow"
-                isAllCaps = false
-                isEnabled = !ok
-                setOnClickListener { s.action() }
-            })
+        // Rebuilt only when a step changes: rebuilding on every refresh lost taps that landed mid-rebuild.
+        val visibleSteps = setupSteps.filter { it.visible() }
+        val states = visibleSteps.map { it.label to it.done() }
+        if (states != shownSteps) {
+            shownSteps = states
+            steps.removeAllViews()
+            for ((s, state) in visibleSteps.zip(states)) {
+                val ok = state.second
+                steps.addView(Button(this).apply {
+                    // A glyph and a word, never colour alone.
+                    text = if (ok) "✓  ${s.label}: done" else "✗  ${s.label}: tap to allow"
+                    isAllCaps = false
+                    isEnabled = !ok
+                    setOnClickListener { s.action() }
+                })
+            }
         }
         startButton.text = if (Status.running) "Stop recording" else "Start recording"
+        uploadButton.visibility = if (h.server != null) View.VISIBLE else View.GONE
 
         val lastOk = prefs.lastUploadOkMs.takeIf { it > 0 }?.let {
             Instant.ofEpochMilli(it).atZone(ZoneId.systemDefault()).format(DateTimeFormatter.ofPattern("d MMM HH:mm"))
@@ -638,7 +663,8 @@ class MainActivity : Activity() {
                 appendLine("Upload: ${Status.lastUpload} (last good: $lastOk)")
                 appendLine("Server: household ${h.id}, device ${prefs.deviceId} (${prefs.deviceStatus})")
             }
-            appendLine("Stored: ${store.files().size} files, ${store.totalBytes() / 1024} KB")
+            val bytes = store.totalBytes()
+            appendLine("Stored: ${store.files().size} files, ${if (bytes in 1 until 1024) "under 1" else bytes / 1024} KB")
             append("App ${BuildConfig.VERSION_NAME}")
         }
     }

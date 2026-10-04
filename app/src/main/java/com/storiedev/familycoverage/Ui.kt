@@ -11,7 +11,9 @@ import android.text.Editable
 import android.text.InputType
 import android.text.TextWatcher
 import android.view.View
+import android.view.WindowInsets
 import android.widget.Button
+import android.widget.FrameLayout
 import android.widget.CheckBox
 import android.widget.EditText
 import android.widget.LinearLayout
@@ -22,9 +24,31 @@ import android.widget.Toast
 object Ui {
     fun dp(c: Context, v: Int) = (v * c.resources.displayMetrics.density).toInt()
 
+    /**
+     * Shows [content] as the screen, inside the status and navigation bars and above the keyboard. Android 15 and
+     * later draw every app edge to edge, so a screen would otherwise start under the status bar and end under the
+     * navigation bar. The keyboard shrinks the content, so a scrolling screen keeps the field being typed in visible.
+     */
+    fun show(a: Activity, content: View, background: Int? = null) {
+        val frame = FrameLayout(a)
+        background?.let { frame.setBackgroundColor(it) }
+        frame.addView(content, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+        frame.setOnApplyWindowInsetsListener { v, insets ->
+            val bars = insets.getInsets(WindowInsets.Type.systemBars() or WindowInsets.Type.displayCutout())
+            val ime = insets.getInsets(WindowInsets.Type.ime())
+            v.setPadding(bars.left, bars.top, bars.right, maxOf(bars.bottom, ime.bottom))
+            WindowInsets.CONSUMED
+        }
+        a.setContentView(frame)
+    }
+
     fun text(c: Context, s: String, sizeSp: Float = 15f, bold: Boolean = false, top: Int = 0) = TextView(c).apply {
         text = s
         textSize = sizeSp
+        // The theme's main text colour: a plain TextView's default is its paler secondary one.
+        c.obtainStyledAttributes(intArrayOf(android.R.attr.textColorPrimary)).use { a ->
+            a.getColorStateList(0)?.let { setTextColor(it) }
+        }
         if (bold) setTypeface(typeface, Typeface.BOLD)
         setPadding(0, dp(c, top), 0, dp(c, 4))
     }

@@ -7,6 +7,12 @@ comparison. A second phone is optional, for the QR code join.
 Note the phone's make, model, Android version and SIMs, then work down the list, writing down anything that crashes,
 looks wrong or confuses you.
 
+**The emulator first.** Android Studio's emulator (a Google Play image, API 31 or newer) runs most of this list:
+setup, places, sharing by pasted code, taps, export and the report. Its one SIM is in service. Simulate the partner's
+texts with `adb emu sms send <their number> "FC test 0A1B2C 12:00:00"`, and airplane mode with
+`adb shell cmd connectivity airplane-mode enable`. It can't stand in for real SIMs, dual SIM, Wi-Fi calling, scanning
+a QR code with the camera, battery use or days in a pocket, so a real phone still has the last word.
+
 ## Install
 
 1. Install the APK (from a release, or `app-full-debug.apk` for a test build). Google Play Protect warns about the full
@@ -74,7 +80,7 @@ looks wrong or confuses you.
 21. **Export the data**, save the zip (Downloads or Drive) and copy it to a computer.
 22. Open `docs/report/index.html` from the source code in a browser (it works straight from the file) and choose the
     zip. The household, your SIMs' networks and the Home place appear, with no errors.
-23. **Delete the recorded data**, then **Leave the household**: the welcome screen returns.
+23. **Stop recording**, **Delete the recorded data**, then **Leave the household**: the welcome screen returns.
 
 ## What to send back
 

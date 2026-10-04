@@ -26,6 +26,7 @@ import android.util.Size
 import android.view.Gravity
 import android.view.Surface
 import android.view.TextureView
+import android.view.WindowInsetsController
 import android.widget.FrameLayout
 import android.widget.TextView
 import com.google.zxing.qrcode.QRCodeReader
@@ -61,7 +62,12 @@ class ScanActivity : Activity() {
             addView(texture, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.CENTER))
             addView(hint, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM))
         }
-        setContentView(root)
+        Ui.show(this, root, Color.BLACK)
+        // Light icons over the black camera screen, whatever the theme says.
+        window.insetsController?.setSystemBarsAppearance(
+            0,
+            WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS or WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS,
+        )
     }
 
     override fun onResume() {

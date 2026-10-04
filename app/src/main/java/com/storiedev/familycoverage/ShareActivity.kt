@@ -60,7 +60,7 @@ class ShareActivity : Activity() {
                 top = 8,
             ),
         )
-        setContentView(ScrollView(this).apply { addView(root) })
+        Ui.show(this, ScrollView(this).apply { addView(root) })
         render()
     }
 

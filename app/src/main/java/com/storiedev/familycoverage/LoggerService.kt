@@ -21,6 +21,7 @@ import android.os.IBinder
 import android.os.PowerManager
 import android.os.Process
 import android.os.SystemClock
+import android.provider.Settings
 import android.telecom.TelecomManager
 import android.telephony.SubscriptionManager
 import java.time.Instant
@@ -259,8 +260,9 @@ class LoggerService : Service() {
                 Status.lastText = "test texts failed: ${e.javaClass.simpleName}"
             }
         }
-        // Nothing measures during a call: a skipped job stays due and runs at the first tick after it.
-        if (!inCall()) {
+        // Nothing measures during a call or in airplane mode (a failed check there says nothing about the network): a
+        // skipped job stays due and runs at the first tick after it.
+        if (!inCall() && !airplaneMode()) {
             if (prefs.dataChecks && !wifi && due("check", now) && checkQueued.compareAndSet(false, true)) {
                 nextDue["check"] = now + Cadence.checkMs(moving)
                 val row = sampler.subscriptions.firstOrNull { it.subId == sampler.dataSubId }?.lastRow
@@ -572,6 +574,8 @@ class LoggerService : Service() {
             Status.lastTest = "test failed: ${e.javaClass.simpleName}"
         }
     }
+
+    private fun airplaneMode(): Boolean = Settings.Global.getInt(contentResolver, Settings.Global.AIRPLANE_MODE_ON, 0) == 1
 
     private fun runServerTest(server: String, rows: List<TelephonySampler.Row>) {
         val member = prefs.member ?: return

@@ -40,7 +40,7 @@ class SetupActivity : Activity() {
         val root = Ui.vertical(this).apply { setPadding(pad, pad, pad, pad) }
         root.addView(Ui.text(this, title, 22f, bold = true))
         root.build()
-        setContentView(ScrollView(this).apply { addView(root) })
+        Ui.show(this, ScrollView(this).apply { addView(root) })
     }
 
     private fun showWelcome() = page("Family Coverage") {
@@ -137,7 +137,7 @@ class SetupActivity : Activity() {
         })
     }
 
-    private fun showJoin() = page("Join a household") {
+    private fun showJoin() = page(if (prefs.household != null) "Scan an updated code" else "Join a household") {
         val c = this@SetupActivity
         addView(
             Ui.text(
@@ -180,7 +180,7 @@ class SetupActivity : Activity() {
     }
 
     /** What the code holds, before this phone takes it. */
-    private fun showPreview(h: Household) = page("Join ${h.name}?") {
+    private fun showPreview(h: Household) = page(if (prefs.household?.id == h.id) "Update ${h.name}?" else "Join ${h.name}?") {
         val c = this@SetupActivity
         val current = prefs.household
         addView(

@@ -490,7 +490,7 @@ function tallyTests(data, places) {
     return p ? ["all", "place:" + p] : ["all"];
   };
   for (const r of data.checks) {
-    if (!r.net) continue;
+    if (!r.net || r.service_state === "POWER_OFF") continue; // airplane mode says nothing about the network
     for (const b of where(r)) {
       const s = get(b, r.net); s.checks++;
       if (r.result === "OK") { s.checksOk++; s.connect.push(num(r.connect_ms)); }
@@ -533,8 +533,9 @@ function tallyTexts(data) {
     if (r.role === "test" && r.event === "received") e.received = { ...r, member };
     if (r.role === "echo" && r.event === "received") e.echo = { ...r, member };
   }
-  const from = new Map(), to = new Map();
+  const from = new Map(), to = new Map(), missing = new Set();
   for (const e of byId.values()) {
+    if (e.sent && e.sent.peer && !members.has(e.sent.peer)) missing.add(e.sent.peer);
     if (!e.sent || !e.sent.net || !members.has(e.sent.peer)) continue; // the partner's export isn't loaded
     if (e.sent.result === "APP_ERROR") continue; // refused by the phone itself, not the network
     const s = from.get(e.sent.net) || { sent: 0, reached: 0, back: 0, latency: [] };
@@ -549,7 +550,7 @@ function tallyTexts(data) {
     }
   }
   const composed = data.texts.filter(r => r.event === "composed").length;
-  return { from, to, composed };
+  return { from, to, composed, missing };
 }
 
 /** Call and text taps by the network of the SIM that was called, with each member's "undo" taken off. */
@@ -742,6 +743,11 @@ function render(data) {
     t += `<h3 style="margin-top:0">Test texts</h3><table><thead><tr><th>Sent from</th><th>Reached the other phone</th><th>Reply came back</th><th>Typical time</th></tr></thead><tbody>` +
       [...texts.from.entries()].map(([k, s]) => `<tr><td>${netCell(k)}</td><td class="num">${bar(s.reached / s.sent, k, `${pct(s.reached / s.sent)}`)} <span class="few">of ${s.sent}</span></td>` +
         `<td class="num">${pct(s.back / s.sent)}</td><td class="num">${fmt(median(s.latency))} s</td></tr>`).join("") + "</tbody></table>";
+  }
+  if (texts.missing.size) {
+    t += `<p class="small muted">Test texts with ${esc([...texts.missing].join(" and "))} count once ` +
+      `${texts.missing.size > 1 ? "their phones' exports are" : "that phone's export is"} loaded too: only the phone ` +
+      `that receives a test sees it arrive.</p>`;
   }
   if (texts.composed) t += `<p class="small muted">${texts.composed} test texts were sent by hand from Messages (the Google Play build); their arrivals are the "Text arrived" taps below.</p>`;
   if (taps.size) {

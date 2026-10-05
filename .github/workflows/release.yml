@@ -18,7 +18,7 @@ jobs:
     timeout-minutes: 30
     env:
       # The release certificate's SHA-256, pinned by tool/New-SigningKey.ps1. Any other signer stops the release.
-      FC_CERT_SHA256: "not-set-yet"
+      FC_CERT_SHA256: "0e972361087a51513c9e202415803c5915fe93a7b98915ac48165ef463dcebac"
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-java@v6

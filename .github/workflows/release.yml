@@ -20,12 +20,13 @@ jobs:
       # The release certificate's SHA-256, pinned by tool/New-SigningKey.ps1. Any other signer stops the release.
       FC_CERT_SHA256: "not-set-yet"
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-java@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version: "17"
-      - uses: gradle/actions/setup-gradle@v4
+      # v5, not v6: v6's caching is a proprietary component with its own terms of use.
+      - uses: gradle/actions/setup-gradle@v5
       - name: Android SDK platform 36
         run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-36" > /dev/null
       - name: The tag matches gradle.properties
@@ -64,7 +65,7 @@ jobs:
           gh release create "$GITHUB_REF_NAME" family-coverage-*.apk SHA256SUMS --draft \
             --title "Family Coverage ${GITHUB_REF_NAME#v}" --notes-file "fastlane/metadata/android/en-US/changelogs/$code.txt"
       - name: Keep the Play bundle
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: play-bundle
           path: app/build/outputs/bundle/playRelease/*.aab

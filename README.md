@@ -9,6 +9,13 @@ school, work, the grandparents', the drive in between. The data stays on your ph
 
 > **Status:** early (0.1). Not released yet: no store listing and no signed builds.
 
+<p>
+  <img src="fastlane/metadata/android/en-US/images/phoneScreenshots/1.png" width="200" alt="The main screen: setup done, recording, and each SIM's network and signal">
+  <img src="fastlane/metadata/android/en-US/images/phoneScreenshots/2.png" width="200" alt="Places: Home, School for Sam with weekday test times, and Work">
+  <img src="fastlane/metadata/android/en-US/images/phoneScreenshots/4.png" width="200" alt="Sharing the household by QR code">
+  <img src="fastlane/metadata/android/en-US/images/tenInchScreenshots/1.png" width="226" alt="The report page comparing two networks overall and at each place">
+</p>
+
 ## How a household uses it
 
 1. **One phone starts a household:** its name, its members, an end date, and optionally a server.

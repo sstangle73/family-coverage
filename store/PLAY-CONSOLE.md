@@ -13,9 +13,10 @@ ones a maintainer should decide on purpose.
   `<li>Optional test texts at your places: the app reminds you and fills in Messages, and the other phone notes when it arrives</li>`
 - **Category:** Tools. **Tags:** network, signal.
 - **Contact:** hello@storiedev.com. **Website:** https://sstangle73.github.io/family-coverage/
-- **Graphics:** the 512 px icon (`images/icon.png`), a 1024 x 500 feature graphic, and 2 to 8 phone screenshots.
-  Play wants a phone screenshot's long side no more than twice its short side: 1080 x 2160, not the emulator's
-  1080 x 2400.
+- **Graphics,** all in `fastlane/metadata/android/en-US/images/`: the 512 px `icon.png`, the 1024 x 500
+  `featureGraphic.png`, six phone screenshots (`phoneScreenshots/`, 1080 x 2160: Play wants a phone shot's long side
+  at most twice its short side) and the report at tablet width (`tenInchScreenshots/`). `tool/store_shots.py` makes
+  the screenshots again after the screens change.
 - **Nothing about donations anywhere in the listing:** Play's payments policy has been enforced against those.
 
 ## App content
@@ -77,9 +78,9 @@ permission), contacts, photos (the camera only reads a QR code, nothing is saved
 - **The prominent disclosure:** the agreement text on the main screen ("records in the background, even when the app
   is closed or not in use"). Then, right before Android's own screen, the *Location in the background* dialog says
   what's collected, why, and where it goes.
-- **Video (30 to 60 s, unlisted on YouTube):** the agreement, the *Location in the background* dialog, Android's
-  *Allow all the time* screen, *Start recording*, the phone locked, and new readings arriving in the status a minute
-  later.
+- **Video (unlisted on YouTube):** `tool/store_shots.py video` records it on the emulator, 75 s: the agreement, the
+  *Location in the background* dialog, Android's *Allow all the time* screen, *Start recording*, 20 s with the screen
+  off, and newer readings in the status after it wakes.
 
 ### Foreground service of type location
 

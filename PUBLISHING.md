@@ -20,8 +20,10 @@ For maintainers. Three channels, one codebase:
       Bitwarden, sets up the `release` environment (your approval, `v*` tags only) with the key as its secrets, and
       pins the certificate's SHA-256 in `.github/workflows/release.yml`. Commit the pin. There's no fallback to the
       debug key: a release signed with it couldn't be updated.
-- [ ] **Screenshots** for `fastlane/metadata/android/en-US/images/phoneScreenshots/` (F-Droid) and the Play listing.
-      Use a made-up household, never real places.
+- [x] **Screenshots** in `fastlane/metadata/android/en-US/images/` (phone shots, one tablet shot of the report, and
+      `featureGraphic.png`), for F-Droid and the Play listing. A made-up household, never real places.
+      `tool/store_shots.py` makes them on the emulator, and Play's background-location video too;
+      `store/feature-graphic.html` is the feature graphic's source.
 - [ ] Test on at least one Pixel and one Samsung, dual-SIM, for a week: [TESTING.md](TESTING.md).
 
 ## Each release

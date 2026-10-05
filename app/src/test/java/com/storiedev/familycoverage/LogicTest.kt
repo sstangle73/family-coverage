@@ -180,6 +180,8 @@ class LogicTest {
         assertTrue(withServer.contains("coverage.example.com"))
         assertTrue(withServer.contains("The Smiths"))
         assertTrue(withServer.contains("Cloudflare"))
+        // Google Play's prominent disclosure for background location needs these words.
+        assertTrue(withServer.contains("in the background, even when the app is closed or not in use"))
         val local = Consent.text(household.copy(server = null), automaticTexts = false, speedTests = false, dataChecks = false)
         assertTrue(local.contains("stays on this phone"))
         assertFalse(local.contains("example.com"))

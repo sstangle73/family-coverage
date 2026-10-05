@@ -19,9 +19,10 @@ object Consent {
         }
         return buildString {
             append("Family Coverage helps ${h.name} compare mobile networks. Until $end, when it stops by itself, ")
-            append("this phone records, for each SIM: the network, 4G or 5G, signal strength and service, every 10 ")
-            append("seconds while you move and about every 2 minutes while you're still; a precise GPS track while ")
-            append("you move; and how much mobile data the phone uses (totals, not which apps).")
+            append("this phone records in the background, even when the app is closed or not in use: for each SIM, ")
+            append("the network, 4G or 5G, signal strength and service, every 10 seconds while you move and about ")
+            append("every 2 minutes while you're still; your precise location with each reading, and a GPS track ")
+            append("while you move; and how much mobile data the phone uses (totals, not which apps).")
             if (tests.isNotEmpty()) {
                 append(" It also runs ${tests.joinToString("; ")}: together about 1 to 2 GB of data a month.")
             }

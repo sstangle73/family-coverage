@@ -81,7 +81,7 @@ class MainActivity : Activity() {
             },
             Step("Location: allow all the time", { granted(Manifest.permission.ACCESS_BACKGROUND_LOCATION) }) {
                 if (granted(Manifest.permission.ACCESS_FINE_LOCATION)) {
-                    requestPermissions(arrayOf(Manifest.permission.ACCESS_BACKGROUND_LOCATION), 2)
+                    backgroundLocationDisclosure()
                 } else {
                     Ui.toast(this, "Allow precise location first.")
                 }
@@ -329,6 +329,32 @@ class MainActivity : Activity() {
     }
 
     private fun eventButton(label: String, kind: String, outcome: String) = Ui.button(this, label) { sendEvent(kind, outcome) }
+
+    /**
+     * Says what location in the background is for, right before Android's own screen asks for it: Google Play
+     * requires this disclosure, in the app, immediately before the request.
+     */
+    private fun backgroundLocationDisclosure() {
+        val server = prefs.household?.server?.let { runCatching { Uri.parse(it).host }.getOrNull() ?: it }
+        val where = if (server == null) {
+            "It stays on this phone until you export it."
+        } else {
+            "It stays on this phone and is copied to $server, your household's server."
+        }
+        AlertDialog.Builder(this)
+            .setTitle("Location in the background")
+            .setMessage(
+                "Family Coverage collects your precise location with each SIM's signal, to show which network works " +
+                    "where. It does this in the background, even when the app is closed or not in use, while you're " +
+                    "recording and until the household's end date. $where\n\nOn the next screen, choose \"Allow all " +
+                    "the time\".",
+            )
+            .setPositiveButton("Continue") { _, _ ->
+                requestPermissions(arrayOf(Manifest.permission.ACCESS_BACKGROUND_LOCATION), 2)
+            }
+            .setNegativeButton("Not now", null)
+            .show()
+    }
 
     // ---- Places --------------------------------------------------------------------------------------------------
 

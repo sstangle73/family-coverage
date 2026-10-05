@@ -59,18 +59,12 @@ The Play build also drops `REQUEST_IGNORE_BATTERY_OPTIMIZATIONS` (limited to lis
 list instead, and carries no donation link (Play's payments policy has been enforced against in-app donation links,
 including links to project pages that mention donating).
 
-The listing:
-- **App content → Privacy policy:** `https://storiedev.com/privacy`.
-- **Data safety:** the app sends nothing to StorieDev. If the household sets up its own server, precise location and
-  app activity go to that server at the user's direction: declare *Location (precise)* as collected, optional, for
-  app functionality, encrypted in transit when https is used, and deletable by the user. Re-read Google's current
-  definitions before submitting.
-- **Permissions declarations:**
-  - *Background location:* core to the app (recording coverage while the phone is in a pocket). Needs the
-    in-app disclosure (the agreement screen) and a short video.
-  - *Foreground service type location:* the recording notification. Needs a short video.
-  - Camera: no declaration (QR code scanning).
-- **Target audience:** adults (the household's organiser installs it); not designed for children.
+The Console's forms (listing, app content, Data safety, the location declarations) are answered in
+[store/PLAY-CONSOLE.md](store/PLAY-CONSOLE.md), with the judgment calls marked. In short:
+- **Data safety:** nothing goes to StorieDev. Only a household's own server, if it sets one up, receives data, so
+  the collection is optional and not shared.
+- **Background location:** the agreement text and the *Location in the background* dialog are the prominent
+  disclosure. The declaration needs a short video.
 - **Testing:** a personal developer account opened after November 2023 needs a closed test with at least 12 testers
   for 14 days before production.
 

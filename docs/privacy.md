@@ -12,7 +12,8 @@ What it records stays on your phone until you export it, or until it's copied to
 
 ## What the app records, and why
 
-To compare mobile networks where your household goes, each phone records, until the household's end date:
+To compare mobile networks where your household goes, each phone records, in the background (even when the app is
+closed or not in use) until the household's end date:
 
 - for each SIM: the carrier and network, the technology (4G, 5G), the serving cell, signal strength and quality,
   service state, how calls would be carried, and which SIM carries data;

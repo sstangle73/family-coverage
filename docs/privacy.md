@@ -35,7 +35,9 @@ own after the household's end date.
   The report page reads exports in your web browser and uploads nothing.
 - **Your household's server, if it has one.** The phones copy their files to the address your household set up.
   StorieDev doesn't run, see or have access to it. The app refuses to send data over plain http unless the server is
-  on your home network or a private VPN.
+  on your home network or a private VPN. If your household turns on the server's FCC comparison (`FC_FCC=auto`), the
+  server downloads the FCC's public coverage files, a whole state at a time, for the states the phones have been in,
+  and the Census Bureau's outlines of the states. It sends no positions or other data from the phones.
 - **Test services.** Data checks contact Cloudflare's 1.1.1.1, and speed tests Cloudflare's speed test
   (speed.cloudflare.com). Like any website, Cloudflare sees your phone's internet address and the test traffic; the
   tests carry no personal information. See [Cloudflare's privacy policy](https://www.cloudflare.com/privacypolicy/).

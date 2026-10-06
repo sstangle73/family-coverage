@@ -3,7 +3,8 @@
 
 The phones copy their daily CSV files here, append-only: each upload says "file X from byte N", the server appends
 what it doesn't have and answers with its size. It also answers the app's server test, serves the report page live
-(behind a password) and a read-only export, and writes the same zips the phones export. Python standard library only.
+(behind a password) and a read-only export, and writes the same zips the phones export. Python standard library only,
+except the optional FCC comparison, which also needs the h3 and requests packages.
 
     python familycoverage_server.py serve
     python familycoverage_server.py list                  # registered installs
@@ -12,6 +13,7 @@ what it doesn't have and answers with its size. It also answers the app's server
     python familycoverage_server.py set-report-password   # asks for the live report's password; --stdin reads it
     python familycoverage_server.py new-export-token      # writes the export token file; prints only its length
     python familycoverage_server.py export-zips <dir>     # one zip per install, in the app's export format
+    python familycoverage_server.py build-fcc             # builds the FCC layer (fcc.json) once, e.g. from cron
 
 Settings (environment):
     FC_DATA            where the data lives (default /data)
@@ -24,11 +26,17 @@ Settings (environment):
     FC_REPORT_PASSWORD_FILE  the report password's scrypt hash (default <FC_DATA>/report_password)
     FC_REPORT_HTML     the report page (default: report.html beside this file, else ../docs/report/index.html)
     FC_FCC_FILE        an FCC coverage layer for the report's map (default <FC_DATA>/fcc.json, if present; the format is
-                       in docs/data-format.md)
+                       in docs/data-format.md): hand-made, or built by the server (FC_FCC, build-fcc)
+    FC_FCC             auto: build FC_FCC_FILE about a minute after startup, then every 24 hours, from the FCC's files
+                       for the states the phones have readings in (default: off). Needs h3 and requests.
+    FC_FCC_STATES      only these states' files, comma-separated abbreviations or FIPS codes, e.g. MA,VT (default: every
+                       state with readings)
+    FC_FCC_CACHE       where the downloaded files are kept (default <FC_DATA>/fcc-cache)
     FC_TAILSCALE       the tailscale CLI, for the server test's path (default: tailscale). On a server that is itself a
                        Tailscale node, a phone that comes over Tailscale learns whether its path was direct or relayed.
 """
 import base64
+import csv
 import getpass
 import gzip
 import hashlib
@@ -36,14 +44,19 @@ import hmac
 import io
 import ipaddress
 import json
+import math
 import os
 import re
 import secrets
+import struct
 import subprocess
 import sys
 import threading
 import time
+import urllib.error
+import urllib.parse
 import zipfile
+import zlib
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -56,6 +69,9 @@ OPEN_ALLOW = os.environ.get("FC_OPEN_ALLOW", "10.0.0.0/8,172.16.0.0/12,192.168.0
 EXPORT_TOKEN_FILE = Path(os.environ.get("FC_EXPORT_TOKEN_FILE", str(DATA / "export_token")))
 REPORT_PASSWORD_FILE = Path(os.environ.get("FC_REPORT_PASSWORD_FILE", str(DATA / "report_password")))
 FCC_FILE = Path(os.environ.get("FC_FCC_FILE", str(DATA / "fcc.json")))
+FCC_MODE = os.environ.get("FC_FCC", "").strip().lower()
+FCC_STATES = os.environ.get("FC_FCC_STATES", "")
+FCC_CACHE = Path(os.environ.get("FC_FCC_CACHE", str(DATA / "fcc-cache")))
 TAILSCALE = os.environ.get("FC_TAILSCALE", "tailscale")
 HERE = Path(__file__).resolve().parent
 REPORT_HTML = Path(os.environ.get("FC_REPORT_HTML") or next(
@@ -126,6 +142,10 @@ def devices_file():
 
 def now_iso():
     return time.strftime("%Y-%m-%dT%H:%M:%S%z")
+
+
+def log(msg):
+    sys.stderr.write("%s %s\n" % (time.strftime("%Y-%m-%dT%H:%M:%S"), msg))
 
 
 def slug(member):
@@ -413,7 +433,7 @@ def metrics_text():
                 totals[k] = totals.get(k, 0) + f.stat().st_size
     for (member, table), n in sorted(totals.items()):
         lines.append(f'familycoverage_stored_bytes{{member="{member}",table="{table}"}} {n}')
-    return "\n".join(lines) + "\n"
+    return "\n".join(lines + fcc_metrics()) + "\n"
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -748,6 +768,673 @@ class Server(ThreadingHTTPServer):
         super().handle_error(request, client_address)
 
 
+# ---- the FCC comparison: what the carriers claim, where the family has readings ---------------------------------
+#
+# Opt-in (FC_FCC=auto, or build-fcc): the server makes fcc.json itself, from the National Broadband Map's per-state
+# files of what Verizon, AT&T and T-Mobile claim to the FCC, cut down to the hexagons the phones have readings in.
+# Privacy: only whole-state files are downloaded, so the family's positions never leave the server. Never use the
+# map's point lookups (mobile/detail/..., h3Index/...): each one would tell the FCC a place the family went. Downloads
+# go only to broadbandmap.fcc.gov and www2.census.gov (FCC_HOSTS). This part alone needs packages beyond the standard
+# library, h3 and requests, and imports them only when it runs. requests because the FCC's site turns Python's own
+# urllib away; it's an ordinary client here, saying who it is, and never dressed up as a browser.
+
+FCC_API = "https://broadbandmap.fcc.gov/nbm/map/api/"
+FCC_HOSTS = ("broadbandmap.fcc.gov", "www2.census.gov")
+# The Census Bureau's cartographic state outlines (1:20 million): the newest year, else the one before.
+FCC_STATE_URLS = ("https://www2.census.gov/geo/tiger/GENZ2024/shp/cb_2024_us_state_20m.zip",
+                  "https://www2.census.gov/geo/tiger/GENZ2023/shp/cb_2023_us_state_20m.zip")
+FCC_USER_AGENT = "FamilyCoverage-server (+https://github.com/sstangle73/family-coverage)"
+FCC_PAUSE = 0.5                     # seconds between calls: the map rate-limits
+FCC_BACKOFF = (2, 4, 8, 16)         # seconds before each retry of a 429 or 5xx
+FCC_FIRST_DELAY, FCC_EVERY = 60, 24 * 3600
+FCC_RES, FCC_MAX_ACCURACY = 9, 150  # the report's grid, and its rule for a reading's hexagon (metres)
+FCC_PROVIDERS = {"131425": "verizon", "130077": "att", "130403": "tmobile"}
+FCC_TIERS = {"4G LTE": 1, "5G-NR (7/1 Mbps)": 2, "5G-NR (35/3 Mbps)": 3}
+# Each carrier's label, and the network codes (MCC+MNC) on its network, so a SIM's readings find their carrier's
+# claims: Visible is on Verizon's network, Cricket on AT&T's.
+FCC_NETWORKS = {
+    "verizon": ("Verizon", "311480 310004 310012 311270 311271 311272 311273 311274 311275 311276 311277 311278 "
+                           "311279 311280 311281 311282 311283 311284 311285 311286 311287 311288 311289 311390"),
+    "att": ("AT&T", "310410 310150 310170 310280 310380 310560 310680 311180 313100 310030"),
+    "tmobile": ("T-Mobile", "310260 310160 310200 310210 310220 310230 310240 310250 310270 310310 310490 310660 "
+                            "310800 312250 311490 311660 311882 312530"),
+}
+FCC_SOURCE = "FCC National Broadband Map, Broadband Data Collection mobile coverage (providers' filings)"
+_fcc_running = threading.Lock()
+_fcc_meta = {}  # what /metrics last read from the layer, and the file's size and time then
+_fcc_http = {}  # the requests session, made on first use
+
+
+def fmt_size(n):
+    return f"{n / 1e6:.1f} MB" if n >= 100_000 else f"{n / 1e3:.1f} KB"
+
+
+def write_atomic(path, data):
+    """Writes a file whole or not at all: a reader sees the old one or the new one."""
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_bytes(data)
+    os.replace(tmp, path)
+
+
+def _float(s):
+    try:
+        v = float(s)
+    except (TypeError, ValueError):
+        return None
+    return v if math.isfinite(v) else None
+
+
+def fcc_missing():
+    """Which of the packages that only the FCC layer needs, h3 and requests, aren't installed."""
+    missing = []
+    for name in ("h3", "requests"):
+        try:
+            __import__(name)
+        except ImportError:
+            missing.append(name)
+    return missing
+
+
+def fcc_needs(missing):
+    s = "s" if len(missing) > 1 else ""
+    return f"the FCC layer needs the {' and '.join(missing)} package{s} (pip install {' '.join(missing)})"
+
+
+def fcc_h3():
+    """The h3 package, imported only when the FCC layer is built: nothing else needs it."""
+    try:
+        import h3
+    except ImportError:
+        raise RuntimeError(fcc_needs(fcc_missing())) from None
+    if not hasattr(h3, "latlng_to_cell"):
+        raise RuntimeError(f"the FCC layer needs h3 version 4, not {getattr(h3, '__version__', 'an older one')}")
+    return h3
+
+
+class _FccResponse:
+    """A requests response, read like a file: the builder reads every answer that way (and the tests' are files)."""
+
+    def __init__(self, r):
+        self.r, self.status, self.headers = r, r.status_code, r.headers
+        if (r.headers.get("Content-Encoding") or "identity").lower() != "identity":
+            # Compressed on the way and unpacked here: the length sent is the compressed one, so it can't check a file.
+            self.headers = type(r.headers)(r.headers)
+            self.headers.pop("Content-Length", None)
+        self.chunks, self.buf = r.iter_content(1 << 20), bytearray()
+
+    def read(self, n=-1):
+        while n < 0 or len(self.buf) < n:
+            block = next(self.chunks, b"")
+            if not block:
+                break
+            self.buf += block
+        n = len(self.buf) if n < 0 else min(n, len(self.buf))
+        out = bytes(self.buf[:n])
+        del self.buf[:n]
+        return out
+
+    def close(self):
+        self.r.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
+
+
+def fcc_fetch(url, headers, timeout):
+    """One GET, with requests: the answer read like a file, or HTTPError for any answer but 2xx. Redirects are followed
+    only within FCC_HOSTS. The tests swap this out, so they never go online, nor need requests."""
+    try:
+        import requests
+    except ImportError:
+        raise RuntimeError(fcc_needs(["requests"])) from None
+    session = _fcc_http.get("session") or _fcc_http.setdefault("session", requests.Session())
+    for _ in range(5):
+        r = session.get(url, headers=headers, timeout=timeout, stream=True, allow_redirects=False)
+        if r.is_redirect:
+            r.close()
+            url = urllib.parse.urljoin(url, r.headers["Location"])
+            if urllib.parse.urlsplit(url).hostname not in FCC_HOSTS:
+                raise urllib.error.HTTPError(url, r.status_code, "a redirect off the FCC's and the Census Bureau's "
+                                             "sites", r.headers, None)
+            continue
+        if not 200 <= r.status_code < 300:
+            r.close()
+            raise urllib.error.HTTPError(url, r.status_code, r.reason or "", r.headers, None)
+        return _FccResponse(r)
+    raise urllib.error.HTTPError(url, r.status_code, "too many redirects", r.headers, None)
+
+
+class FccClient:
+    """GETs from the FCC's map and the Census Bureau. The map answers 403 without its own site as the Referer, and it
+    rate-limits: calls are FCC_PAUSE apart, and a 429 or 5xx (or no answer at all) is tried again after FCC_BACKOFF."""
+
+    def __init__(self, fetch=None, pause=None, sleep=time.sleep):
+        self.fetch, self.sleep = fetch or fcc_fetch, sleep
+        self.pause = FCC_PAUSE if pause is None else pause
+        self.last = float("-inf")
+
+    def get(self, url, timeout=120):
+        host = urllib.parse.urlsplit(url).hostname
+        if host not in FCC_HOSTS:
+            raise ValueError(f"the FCC layer downloads only from {' and '.join(FCC_HOSTS)}, not {host}")
+        headers = {"User-Agent": FCC_USER_AGENT, "Accept": "application/json, */*"}
+        if host == "broadbandmap.fcc.gov":
+            headers["Referer"] = "https://broadbandmap.fcc.gov/"
+        for backoff in FCC_BACKOFF + (None,):
+            wait = self.pause - (time.monotonic() - self.last)
+            if wait > 0:
+                self.sleep(wait)
+            try:
+                return self.fetch(url, headers, timeout)
+            except urllib.error.HTTPError as e:
+                e.close()
+                if backoff is None or (e.code != 429 and e.code < 500):
+                    raise
+            except OSError:  # no answer at all: a timeout, a dropped connection, a DNS hiccup
+                if backoff is None:
+                    raise
+            finally:
+                self.last = time.monotonic()
+            self.sleep(backoff)
+
+    def data(self, path):
+        """The "data" list the map's API answers with."""
+        with self.get(FCC_API + path) as r:
+            body = json.loads(r.read().decode("utf-8"))
+        rows = body.get("data") if isinstance(body, dict) else None
+        if not isinstance(rows, list):
+            raise ValueError(f"{path}: the FCC's answer isn't in the shape this server knows")
+        return rows
+
+
+def read_dbf(fh, names, keep=None):
+    """The named fields of a dBase table's live records, streamed from fh: (record number, [stripped strings]) each.
+
+    keep: the values of the first named field to keep, as bytes. Other records are skipped before anything is decoded,
+    which keeps a scan of a million-row table to about a second.
+    """
+    head = fh.read(32)
+    if len(head) < 32:
+        raise ValueError("not a dBase table")
+    count, head_len, rec_len = struct.unpack("<IHH", head[4:12])
+    if rec_len < 1 or head_len < 33:
+        raise ValueError("not a dBase table")
+    desc, fields, at = fh.read(head_len - 32), {}, 1  # each record starts with its deletion flag
+    for i in range(0, len(desc) - 31, 32):
+        if desc[i] == 0x0D:
+            break
+        fields[desc[i:i + 11].split(b"\0", 1)[0].decode("latin-1").strip().lower()] = (at, desc[i + 16])
+        at += desc[i + 16]
+    try:
+        cols = [fields[n.lower()] for n in names]
+    except KeyError as e:
+        raise ValueError(f"the table has no field {e.args[0]}") from None
+    kat, klen = cols[0]
+    per_block, done = max(1, (1 << 20) // rec_len), 0
+    while done < count:
+        n = min(per_block, count - done)
+        block = fh.read(n * rec_len)
+        if len(block) < n * rec_len:
+            raise ValueError(f"the table ends after {done + len(block) // rec_len} of its {count} records")
+        for o in range(0, len(block), rec_len):
+            if block[o] == 0x2A:  # "*": deleted
+                continue
+            if keep is not None and block[o + kat:o + kat + klen].rstrip(b" \0") not in keep:
+                continue
+            yield done + o // rec_len, [block[o + a:o + a + w].strip(b" \0").decode("latin-1") for a, w in cols]
+        done += n
+    fh.read()  # on to the end, so a zip member's CRC is checked: a damaged download fails here, not quietly
+
+
+def read_shp(data):
+    """A polygon shapefile's records: (bbox, [(ring bbox, [(x, y), ...]), ...]) each, None for an empty one. x is the
+    longitude."""
+    if len(data) < 100 or struct.unpack(">i", data[:4])[0] != 9994:
+        raise ValueError("not a shapefile")
+    out, pos = [], 100
+    while pos + 8 <= len(data):
+        words = struct.unpack(">i", data[pos + 4:pos + 8])[0]
+        rec, pos = data[pos + 8:pos + 8 + 2 * words], pos + 8 + 2 * words
+        kind = struct.unpack("<i", rec[:4])[0]
+        if kind == 0:
+            out.append(None)
+            continue
+        if kind not in (5, 15, 25):  # polygon, polygon Z, polygon M: x and y come first in all three
+            raise ValueError(f"shape type {kind} isn't a polygon")
+        bbox = struct.unpack("<4d", rec[4:36])
+        nparts, npoints = struct.unpack("<2i", rec[36:44])
+        starts = struct.unpack(f"<{nparts}i", rec[44:44 + 4 * nparts]) + (npoints,)
+        xy = struct.unpack(f"<{2 * npoints}d", rec[44 + 4 * nparts:44 + 4 * nparts + 16 * npoints])
+        rings = []
+        for a, b in zip(starts, starts[1:]):
+            xs, ys = xy[2 * a:2 * b:2], xy[2 * a + 1:2 * b:2]
+            if xs:
+                rings.append(((min(xs), min(ys), max(xs), max(ys)), list(zip(xs, ys))))
+        out.append((bbox, rings))
+    return out
+
+
+def in_polygon(x, y, rings):
+    """The even-odd rule over every ring, outer rings and holes alike: inside if a ray east crosses an odd number of
+    edges."""
+    inside = False
+    for (x0, y0, x1, y1), ring in rings:
+        if not (x0 <= x <= x1 and y0 <= y <= y1):
+            continue  # a ring that can't hold the point crosses the ray an even number of times
+        px, py = ring[-1]
+        for qx, qy in ring:
+            if (qy > y) != (py > y) and x < (px - qx) * (y - qy) / (py - qy) + qx:
+                inside = not inside
+            px, py = qx, qy
+    return inside
+
+
+def state_at(states, lon, lat):
+    """The FIPS code of the state holding a point, or None (offshore, or abroad)."""
+    for fips, _, (x0, y0, x1, y1), rings in states:
+        if x0 <= lon <= x1 and y0 <= lat <= y1 and in_polygon(lon, lat, rings):
+            return fips
+    return None
+
+
+def fcc_states(client):
+    """The Census Bureau's state outlines, downloaded once into the cache: [(FIPS, abbreviation, bbox, rings)]."""
+    path = next((p for p in (FCC_CACHE / u.rsplit("/", 1)[1] for u in FCC_STATE_URLS) if p.is_file()), None)
+    if path is None:
+        path = fcc_states_download(client)
+    with zipfile.ZipFile(path) as z:
+        shp = next((n for n in z.namelist() if n.lower().endswith(".shp")), None)
+        dbf = next((n for n in z.namelist() if n.lower().endswith(".dbf")), None)
+        if not shp or not dbf:
+            raise ValueError(f"{path.name} isn't a shapefile of the states")
+        shapes = read_shp(z.read(shp))
+        with z.open(dbf) as fh:
+            names = dict(read_dbf(fh, ("STATEFP", "STUSPS")))
+    return [(names[i][0].zfill(2), names[i][1], *shape) for i, shape in enumerate(shapes) if shape and i in names]
+
+
+def fcc_states_download(client):
+    err = None
+    for url in FCC_STATE_URLS:
+        try:
+            with client.get(url) as r:
+                data = r.read()
+        except urllib.error.HTTPError as e:  # not published yet, or moved: the year before
+            err = e
+            continue
+        if not zipfile.is_zipfile(io.BytesIO(data)):
+            err = ValueError(f"{url} isn't a zip")
+            continue
+        path = FCC_CACHE / url.rsplit("/", 1)[1]
+        write_atomic(path, data)
+        log(f"fcc: state outlines: {path.name}, {fmt_size(len(data))}")
+        return path
+    raise err
+
+
+def fcc_allowed(states):
+    """FC_FCC_STATES as FIPS codes, or None for every state."""
+    if not FCC_STATES.strip():
+        return None
+    by_abbr = {abbr.upper(): fips for fips, abbr, _, _ in states}
+    out = set()
+    for tok in (t.strip().upper() for t in FCC_STATES.split(",")):
+        fips = tok.zfill(2) if tok.isdigit() else by_abbr.get(tok)
+        if fips in by_abbr.values():
+            out.add(fips)
+        elif tok:
+            log(f"fcc: FC_FCC_STATES: {tok} isn't a state, so it's left out")
+    return out
+
+
+def fcc_cells(h3):
+    """The resolution-9 hexagons the report can draw: each stored reading's, unless its fix is vaguer than 150 m (the
+    report's own rule). The report draws the FCC's tiers only where there are readings, so these are all it needs."""
+    cells = set()
+    for _, _, dev_dir in device_dirs():
+        for f in sorted(dev_dir.glob("samples-*.csv")):
+            if not NAME.match(f.name):
+                continue
+            rows = csv.reader(io.StringIO(complete_rows(f).decode("utf-8", "replace")))
+            header = next(rows, [])
+            if "lat" not in header or "lon" not in header:
+                continue
+            ilat, ilon = header.index("lat"), header.index("lon")
+            iacc = header.index("accuracy_m") if "accuracy_m" in header else None
+            last, seen = max(ilat, ilon, iacc or 0), set()  # a phone sitting still repeats its position
+            for r in rows:
+                if len(r) <= last:
+                    continue
+                acc = _float(r[iacc]) if iacc is not None else None
+                if (acc is not None and acc > FCC_MAX_ACCURACY) or (r[ilat], r[ilon]) in seen:
+                    continue
+                seen.add((r[ilat], r[ilon]))
+                lat, lon = _float(r[ilat]), _float(r[ilon])
+                if lat is not None and lon is not None and abs(lat) <= 90 and abs(lon) <= 180:
+                    cells.add(h3.latlng_to_cell(lat, lon, FCC_RES))
+    return cells
+
+
+def fcc_vintage(client):
+    """(date, process uuid) of the newest biannual filing the map has published, such as ("2025-12-31", "6aec...")."""
+    best = None
+    for path in ("published/filing", "published/downloads"):
+        for f in client.data(path):
+            if not isinstance(f, dict) or f.get("filing_type") != "Biannual" \
+                    or not re.fullmatch(r"[0-9A-Fa-f-]{8,64}", str(f.get("process_uuid"))):
+                continue
+            try:
+                day = datetime.strptime(str(f.get("filing_subtype")), "%B %d, %Y").date().isoformat()
+            except ValueError:
+                continue
+            if best is None or day >= best[0]:
+                best = (day, str(f["process_uuid"]))
+    if best is None:
+        raise ValueError("the FCC's map lists no published biannual filing")
+    return best
+
+
+def fcc_listing(client, vdir, uuid, fresh=False):
+    """The vintage's list of downloadable files, about 10,600 rows and 5 MB, so it's kept: (rows, from the cache?)."""
+    path = vdir / "listing.json"
+    if not fresh:
+        try:
+            saved = json.loads(path.read_text(encoding="utf-8"))
+            if saved["process_uuid"] == uuid and isinstance(saved["data"], list):
+                return saved["data"], True
+        except (OSError, ValueError, KeyError, TypeError):
+            pass
+    rows = client.data(f"national_map_process/nbm_get_data_download/{uuid}")
+    vdir.mkdir(parents=True, exist_ok=True)
+    write_atomic(path, json.dumps({"process_uuid": uuid, "fetched": now_iso(), "data": rows}).encode("utf-8"))
+    return rows, False
+
+
+def fcc_pick(rows, fips):
+    """The state's H3 files for the three carriers, and the carriers that have no 4G LTE file there. Without one, all
+    of that carrier's hexagons would wrongly read as claiming nothing, so such a state isn't used."""
+    picked = {}
+    for x in rows:
+        if not isinstance(x, dict):
+            continue
+        pid, tech, fid = str(x.get("provider_id")), x.get("technology_code_desc"), str(x.get("id"))
+        if (x.get("data_category") == "Provider" and x.get("data_type") == "Mobile Broadband"
+                and str(x.get("state_fips")).zfill(2) == fips and x.get("download_available") == "Yes"
+                and pid in FCC_PROVIDERS and tech in FCC_TIERS and "_h3_" in str(x.get("file_name"))
+                and fid.isascii() and fid.isdigit()):
+            picked[fid] = {"id": fid, "network": FCC_PROVIDERS[pid], "tier": FCC_TIERS[tech], "technology": tech}
+    order = list(FCC_NETWORKS)
+    files = sorted(picked.values(), key=lambda p: (order.index(p["network"]), p["tier"], int(p["id"])))
+    lte = {p["network"] for p in files if p["tier"] == 1}
+    return files, [n for n in FCC_NETWORKS if n not in lte]
+
+
+def fcc_download(client, f, sdir, abbr):
+    """One H3 file into the state's folder, named as the FCC names it: (name, bytes). A file already there with the size
+    the FCC gives is kept, so an interrupted build carries on where it stopped."""
+    what = f"fcc: {abbr} {FCC_NETWORKS[f['network']][0]} {f['technology']}"
+    with client.get(f"{FCC_API}getNBMDataDownloadFile/{f['id']}/1", timeout=300) as r:
+        m = re.search(r'filename="?([^";]+)"?', r.headers.get("Content-Disposition") or "")
+        name = m.group(1).strip() if m else ""
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,199}", name):
+            name = f"{f['id']}.zip"
+        path, part = sdir / name, sdir / (name + ".part")
+        length = r.headers.get("Content-Length") or ""
+        size = int(length) if length.isdigit() else None
+        if size is not None and path.is_file() and path.stat().st_size == size:
+            log(f"{what}: {name}, {fmt_size(size)}, already here")
+            return name, size
+        got = 0
+        with open(part, "wb") as fh:
+            for block in iter(lambda: r.read(1 << 20), b""):
+                fh.write(block)
+                got += len(block)
+    if (size is not None and got != size) or not zipfile.is_zipfile(part):
+        part.unlink(missing_ok=True)
+        raise ValueError(f"{name}: the download came out wrong ({got} bytes of {size})")
+    os.replace(part, path)
+    log(f"{what}: {name}, {fmt_size(got)}")
+    return name, got
+
+
+def fcc_done(sdir):
+    """The state's done.json, when every file it lists is still there."""
+    try:
+        done = json.loads((sdir / "done.json").read_text(encoding="utf-8"))
+        return done if done["files"] and all((sdir / f["file"]).is_file() for f in done["files"]) else None
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+
+
+def fcc_state(client, vdir, uuid, fips, abbr, memo):
+    """One state's files, downloaded once: (done, None), or (None, why the state is left out). done.json, the list of
+    the files, is written only once they've all arrived, so an interrupted download carries on next time."""
+    sdir = vdir / fips
+    done = fcc_done(sdir)
+    if done:
+        return done, None
+    for attempt in (1, 2):
+        if attempt == 2 or "rows" not in memo:
+            memo["rows"], memo["saved"] = fcc_listing(client, vdir, uuid, fresh=attempt == 2)
+        picked, missing = fcc_pick(memo["rows"], fips)
+        if missing:
+            return None, "no 4G LTE file for " + " or ".join(FCC_NETWORKS[n][0] for n in missing)
+        sdir.mkdir(parents=True, exist_ok=True)
+        try:
+            files = []
+            for f in picked:
+                name, size = fcc_download(client, f, sdir, abbr)
+                files.append(dict(f, file=name, bytes=size))
+            break
+        except urllib.error.HTTPError:
+            if attempt == 2 or not memo["saved"]:
+                raise
+            log("fcc: a download failed with the saved list of files, so it's fetched again (the FCC renumbers its "
+                "files when it re-processes a vintage)")
+    done = {"vintage": vdir.name, "process_uuid": uuid, "state": fips, "abbr": abbr, "completed": now_iso(),
+            "files": files}
+    write_atomic(sdir / "done.json", json.dumps(done, indent=1).encode("utf-8"))
+    log(f"fcc: {abbr}: {len(files)} files, {fmt_size(sum(f['bytes'] for f in files))}")
+    return done, None
+
+
+def fcc_tiers(vdir, have, domain):
+    """Each carrier's best tier in each hexagon of `domain`: {network: {"o": {cell: tier}, "v": {cell: tier}}}.
+
+    "o" (outdoors, standing still) is the best over all of a hexagon's rows; "v" over those also modelled for a moving
+    car (environmnt 1). Only each file's .dbf table is read. Every state's files are read for every hexagon: the Census
+    outlines are simplified, so a hexagon near a state line can be in the neighbour's files.
+    """
+    keep = {c.encode("ascii") for c in domain} | {c.upper().encode("ascii") for c in domain}
+    out = {n: {"o": {}, "v": {}} for n in FCC_NETWORKS}
+    for fips, done in sorted(have.items()):
+        for f in done["files"]:
+            o, v, tier, path = out[f["network"]]["o"], out[f["network"]]["v"], f["tier"], vdir / fips / f["file"]
+            try:
+                with zipfile.ZipFile(path) as z:
+                    tables = [n for n in z.namelist() if n.lower().endswith(".dbf")]
+                    if not tables:
+                        raise ValueError(f"{path.name} has no .dbf table")
+                    for member in tables:
+                        with z.open(member) as fh:
+                            for _, (cell, env) in read_dbf(fh, ("h3_res9_id", "environmnt"), keep):
+                                cell = cell.lower()
+                                if tier > o.get(cell, 0):
+                                    o[cell] = tier
+                                if _float(env) == 1 and tier > v.get(cell, 0):
+                                    v[cell] = tier
+            except (zipfile.BadZipFile, zlib.error, EOFError) as e:  # damaged: dropped, for the next build to fetch
+                path.unlink(missing_ok=True)
+                (vdir / fips / "done.json").unlink(missing_ok=True)
+                raise ValueError(f"{path.name} is damaged ({e}), so it's deleted for the next build to fetch again") \
+                    from None
+    return out
+
+
+def fcc_layer(h3, vintage, states, domain, tiers):
+    """fcc.json's content, in docs/data-format.md's shape: each carrier's hexagons by the best tier it claims there."""
+    def compact(cells):
+        return sorted(h3.compact_cells(sorted(cells)))
+
+    nets = {}
+    for key, (label, plmns) in FCC_NETWORKS.items():
+        nets[key] = {"label": label, "plmns": plmns.split()}
+        for env in ("o", "v"):
+            best = tiers[key][env]
+            nets[key][env] = {str(t): compact(c for c in domain if best.get(c) == t) for t in (1, 2, 3)}
+    return {"format": "family-coverage-fcc", "version": 1, "vintage": vintage,
+            "updated": datetime.now().astimezone().isoformat(timespec="seconds"), "source": FCC_SOURCE,
+            "states": sorted(states), "networks": nets, "domain": compact(domain)}
+
+
+def build_fcc(client=None):
+    """Builds fcc.json once: the newest vintage's claims of the three carriers, in every hexagon with readings that
+    lies in a state whose files are complete. Returns a summary; raises on failure, and the old fcc.json stays."""
+    h3 = fcc_h3()
+    if not _fcc_running.acquire(blocking=False):
+        raise RuntimeError("a build is already running")
+    try:
+        FCC_CACHE.mkdir(parents=True, exist_ok=True)
+        with open(FCC_CACHE / "build.lock", "a") as lock:
+            try:
+                import fcntl  # so build-fcc and the server's own builder never download the same file at once
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except ImportError:  # Windows: one build per process is all that's checked
+                pass
+            except OSError:
+                raise RuntimeError("another build is running (the server's own, or build-fcc)") from None
+            return _build_fcc(h3, client or FccClient())
+    finally:
+        _fcc_running.release()
+
+
+def _build_fcc(h3, client):
+    started = time.time()
+    cells = fcc_cells(h3)  # before anything goes online: with no readings, nothing does
+    s = {"cells": len(cells), "written": False, "states": [], "skipped": {}, "domain": 0, "in_skipped": 0,
+         "outside": 0}
+    if not cells:
+        s["why"] = "there are no readings with a position yet"
+        return s
+    states = fcc_states(client)
+    abbr = {fips: ab for fips, ab, _, _ in states}
+    by_state = {}
+    for c in cells:
+        lat, lon = h3.cell_to_latlng(c)
+        by_state.setdefault(state_at(states, lon, lat), set()).add(c)
+    s["outside"] = len(by_state.pop(None, ()))
+    allowed = fcc_allowed(states)
+    skipped = {f: "not in FC_FCC_STATES" for f in by_state if allowed is not None and f not in allowed}
+    have = {}
+    wanted = sorted(f for f in by_state if f not in skipped)
+    if wanted:
+        s["vintage"], uuid = fcc_vintage(client)
+        memo = {}
+        for fips in wanted:
+            done, why = fcc_state(client, FCC_CACHE / s["vintage"], uuid, fips, abbr[fips], memo)
+            if done:
+                have[fips] = done
+            else:
+                skipped[fips] = why
+    domain = set().union(*(by_state[f] for f in have))
+    s.update(states=[abbr[f] for f in sorted(have)], skipped={abbr[f]: why for f, why in sorted(skipped.items())},
+             domain=len(domain), in_skipped=len(cells) - len(domain) - s["outside"])
+    if not domain:
+        s["why"] = "no hexagon with readings is in a state with the FCC's files"
+        return s
+    tiers = fcc_tiers(FCC_CACHE / s["vintage"], have, domain)
+    data = json.dumps(fcc_layer(h3, s["vintage"], have, domain, tiers), separators=(",", ":")).encode("utf-8")
+    FCC_FILE.parent.mkdir(parents=True, exist_ok=True)
+    write_atomic(FCC_FILE, data)
+    s.update(written=True, bytes=len(data), seconds=round(time.time() - started),
+             networks={n: {e: [sum(1 for c in domain if tiers[n][e].get(c) == t) for t in (1, 2, 3)] for e in "ov"}
+                       for n in FCC_NETWORKS})
+    return s
+
+
+def fcc_summary(s):
+    """A build in one line, for the log and build-fcc: the vintage, the states used and the ones left out (and why),
+    the hexagons, and the file's size."""
+    if not s["cells"]:
+        return "fcc: nothing to build, as there are no readings with a position yet"
+    head = (f"fcc: built {FCC_FILE.name} ({fmt_size(s['bytes'])}) in {s['seconds']} s" if s["written"]
+            else f"fcc: {FCC_FILE.name} left as it was, as {s['why']}")
+    parts = [f"vintage {s['vintage']}" if s.get("vintage") else "",
+             "data for " + (", ".join(s["states"]) or "no state"),
+             "skipped " + ", ".join(f"{k} ({v})" for k, v in s["skipped"].items()) if s["skipped"] else "",
+             f"hexagons with readings {s['cells']}: in the layer {s['domain']}, in skipped states {s['in_skipped']}, "
+             f"in no state {s['outside']}"]
+    return head + ": " + "; ".join(p for p in parts if p)
+
+
+def fcc_network_lines(s):
+    """Each carrier's claims among the layer's hexagons, for build-fcc."""
+    return [f"  {FCC_NETWORKS[key][0]}: outdoors {sum(n['o'])} of {s['domain']} claimed (5G 35/3 Mbps {n['o'][2]}, "
+            f"5G 7/1 Mbps {n['o'][1]}, LTE {n['o'][0]}), in a moving car {sum(n['v'])}"
+            for key, n in s.get("networks", {}).items()]
+
+
+def fcc_failed(e):
+    where = f" ({e.url})" if isinstance(e, urllib.error.HTTPError) else ""
+    return f"fcc: build failed, so {FCC_FILE.name} stays as it was: {type(e).__name__}: {e}{where}"
+
+
+def start_fcc_builder():
+    """With FC_FCC=auto, a thread that builds the FCC layer about a minute after startup, then every 24 hours."""
+    if FCC_MODE in ("", "off"):
+        return None
+    if FCC_MODE != "auto":
+        log(f"fcc: FC_FCC={FCC_MODE} isn't a setting this server knows (auto turns the FCC layer on), so it stays off")
+        return None
+    try:
+        if fcc_missing():
+            raise RuntimeError(fcc_needs(fcc_missing()))
+        fcc_h3()
+    except RuntimeError as e:
+        log(f"fcc: FC_FCC=auto, but {e}; everything else runs as usual")
+        return None
+    log(f"fcc: building the FCC layer in {FCC_FIRST_DELAY} s, then every {FCC_EVERY // 3600} h")
+    t = threading.Thread(target=_fcc_loop, name="fcc", daemon=True)
+    t.start()
+    return t
+
+
+def _fcc_loop():
+    time.sleep(FCC_FIRST_DELAY)
+    while True:
+        try:
+            log(fcc_summary(build_fcc()))
+        except Exception as e:  # the network, the FCC's site, the disk: one line, and the next build tries again
+            log(fcc_failed(e))
+        time.sleep(FCC_EVERY)
+
+
+def fcc_metrics():
+    """/metrics lines for the FCC layer, when there is one: when it was written, and how many states it covers."""
+    try:
+        st = FCC_FILE.stat()
+    except OSError:
+        return []
+    key = (str(FCC_FILE), st.st_size, st.st_mtime_ns)
+    if _fcc_meta.get("key") != key:
+        try:
+            states = json.loads(FCC_FILE.read_bytes()).get("states")
+        except (OSError, ValueError, AttributeError):
+            states = None
+        _fcc_meta.update(key=key, states=len(states) if isinstance(states, list) else None)
+    lines = ["# HELP familycoverage_fcc_layer_built_timestamp_seconds When the FCC layer (fcc.json) was last written.",
+             "# TYPE familycoverage_fcc_layer_built_timestamp_seconds gauge",
+             f"familycoverage_fcc_layer_built_timestamp_seconds {int(st.st_mtime)}"]
+    if _fcc_meta["states"] is not None:
+        lines += ["# HELP familycoverage_fcc_layer_states States the FCC layer has the carriers' claims for.",
+                  "# TYPE familycoverage_fcc_layer_states gauge",
+                  f"familycoverage_fcc_layer_states {_fcc_meta['states']}"]
+    return lines
+
+
 def cli(argv):
     cmd = argv[1] if len(argv) > 1 else "serve"
     if cmd == "serve":
@@ -755,6 +1442,7 @@ def cli(argv):
         DATA.mkdir(parents=True, exist_ok=True)
         httpd = Server((host.strip("[]"), int(port)), Handler)
         sys.stderr.write(f"familycoverage: listening on {LISTEN}, data {DATA}\n")
+        start_fcc_builder()
         httpd.serve_forever()
     elif cmd == "list":
         for did, d in sorted(load_devices().items(), key=lambda kv: kv[1].get("first_seen", "")):
@@ -793,6 +1481,15 @@ def cli(argv):
     elif cmd == "export-zips" and len(argv) == 3:
         for p in export_zips(argv[2]):
             print(p)
+    elif cmd == "build-fcc":
+        # One build, whatever FC_FCC says: for cron, instead of the server's own daily build.
+        try:
+            s = build_fcc()
+        except Exception as e:
+            sys.exit(fcc_failed(e))
+        print(fcc_summary(s))
+        for line in fcc_network_lines(s):
+            print(line)
     else:
         sys.exit(__doc__)
 

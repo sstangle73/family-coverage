@@ -69,19 +69,22 @@ a QR code with the camera, battery use or days in a pocket, so a real phone stil
 
 ## With a server (optional)
 
-19. Run the server (`server/README.md`), **Edit the household** to set its address, agree again, and approve the phone
-    on the server. Within 15 minutes on Wi-Fi, the server's `list` shows the phone approved with a recent *last* time,
-    and the app's **Open the live report** opens its `/report/`, which shows the readings once you enter the report
-    password.
-20. If the server is a Tailscale node and the phone reaches it through Tailscale: off Wi-Fi, *Last server test* ends
+19. **The server check.** In **Edit the household**, enter `https://example.com` and save: *✗ Something answered at
+    that address, but it isn't a Family Coverage server*, and nothing is saved. Then `http://192.168.1.250` (nothing
+    there): *▲ No answer from that address from here* and *Save anyway* / *Change it*; choose **Change it**.
+20. Run the server (`server/README.md`), **Edit the household** to set its address (*✓ Found it*), agree again, and
+    approve the phone on the server. Within 15 minutes on Wi-Fi, the server's `list` shows the phone approved with a
+    recent *last* time, and the app's **Open the live report** opens its `/report/`, which shows the readings once you
+    enter the report password.
+21. If the server is a Tailscale node and the phone reaches it through Tailscale: off Wi-Fi, *Last server test* ends
     with *Tailscale direct -> direct* or *derp -> direct* (the first test runs about 7 minutes after recording starts).
 
 ## Export, report, clean up
 
-21. **Export the data**, save the zip (Downloads or Drive) and copy it to a computer.
-22. Open `docs/report/index.html` from the source code in a browser (it works straight from the file) and choose the
+22. **Export the data**, save the zip (Downloads or Drive) and copy it to a computer.
+23. Open `docs/report/index.html` from the source code in a browser (it works straight from the file) and choose the
     zip. The household, your SIMs' networks and the Home place appear, with no errors.
-23. **Stop recording**, **Delete the recorded data**, then **Leave the household**: the welcome screen returns.
+24. **Stop recording**, **Delete the recorded data**, then **Leave the household**: the welcome screen returns.
 
 ## What to send back
 

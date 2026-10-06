@@ -1,6 +1,7 @@
 package com.storiedev.familycoverage
 
 import android.app.Activity
+import android.app.AlertDialog
 import android.app.DatePickerDialog
 import android.content.Intent
 import android.os.Bundle
@@ -108,7 +109,8 @@ class SetupActivity : Activity() {
         addView(server)
         val error = Ui.text(c, "", 14f)
         addView(error)
-        addView(Ui.button(c, if (existing == null) "Create the household" else "Save") {
+        lateinit var saveButton: Button
+        saveButton = Ui.button(c, if (existing == null) "Create the household" else "Save") {
             try {
                 val list = members.text.toString().lines().mapNotNull { Household.cleanMember(it) }.distinct()
                 require(list.isNotEmpty()) { "add at least one member" }
@@ -127,14 +129,49 @@ class SetupActivity : Activity() {
                 if (me != null && me !in list && Status.running) {
                     throw IllegalArgumentException("this phone belongs to $me: keep $me in the list, or stop recording first")
                 }
-                if (h.server != prefs.household?.server) prefs.resetServer()
-                if (termsChanged(existing, h)) agreeAgain()
-                prefs.household = h
-                if (me == null || me !in list) showMemberPicker(h) else done()
+                val server = h.server
+                if (server == null || server == existing?.server) {
+                    keep(existing, h)
+                    return@button
+                }
+                // A new server address: make sure it's a Family Coverage server before the phones try to use it.
+                error.text = "Checking the server…"
+                saveButton.isEnabled = false
+                checkServer(server, h.id) { r ->
+                    saveButton.isEnabled = true
+                    error.text = ServerCheck.describe(r, h.id)
+                    when {
+                        r.verdict.ok -> keep(existing, h)
+                        r.verdict in SAVE_ANYWAY -> AlertDialog.Builder(c)
+                            .setMessage(ServerCheck.describe(r, h.id))
+                            .setPositiveButton("Save anyway") { _, _ -> keep(existing, h) }
+                            .setNegativeButton("Change it", null)
+                            .show()
+                        else -> {} // the reason stays under the form until the address is fixed
+                    }
+                }
             } catch (e: IllegalArgumentException) {
                 error.text = "✗  ${e.message?.replaceFirstChar { it.uppercase() }}."
             }
-        })
+        }
+        addView(saveButton)
+    }
+
+    /** Keeps the household's settings, then on to choosing the member if this phone's isn't on the list. */
+    private fun keep(existing: Household?, h: Household) {
+        val me = prefs.member
+        if (h.server != prefs.household?.server) prefs.resetServer()
+        if (termsChanged(existing, h)) agreeAgain()
+        prefs.household = h
+        if (me == null || me !in h.members) showMemberPicker(h) else done()
+    }
+
+    /** The server check, off the main thread; [then] runs back on it, unless the screen has gone. */
+    private fun checkServer(server: String, householdId: String, then: (ServerCheck.Result) -> Unit) {
+        Thread {
+            val r = ServerCheck.run(server, householdId)
+            runOnUiThread { if (!isFinishing && !isDestroyed) then(r) }
+        }.start()
     }
 
     private fun showJoin() = page(if (prefs.household != null) "Scan an updated code" else "Join a household") {
@@ -198,6 +235,12 @@ class SetupActivity : Activity() {
                     },
             ),
         )
+        h.server?.let { server ->
+            // The joining phone can't change the address, but it can say now whether its data will get there.
+            val check = Ui.text(c, "Checking the server…", 13f)
+            addView(check)
+            checkServer(server, h.id) { r -> check.text = ServerCheck.describe(r, h.id) }
+        }
         addView(Ui.button(c, if (current?.id == h.id) "Update this phone" else "Join") {
             val me = prefs.member
             if (current != null && current.id != h.id && Status.running) {
@@ -273,5 +316,10 @@ class SetupActivity : Activity() {
         const val MODE_JOIN = "join"
         const val MODE_MEMBER = "member"
         private const val REQ_SCAN = 1
+
+        /** Check results that may come right later (away from home, say), so saving anyway is offered. */
+        private val SAVE_ANYWAY = setOf(
+            ServerCheck.Verdict.OTHER_HOUSEHOLD, ServerCheck.Verdict.REFUSED, ServerCheck.Verdict.UNREACHABLE,
+        )
     }
 }

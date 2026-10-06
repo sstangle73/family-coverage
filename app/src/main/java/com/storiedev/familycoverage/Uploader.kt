@@ -61,6 +61,11 @@ class Uploader(private val prefs: Prefs, private val store: CsvStore) {
             when {
                 otherHousehold -> "the server is set up for another household (its FC_HOUSEHOLD)"
                 e.code == 429 -> "the server has too many phones waiting for approval"
+                // A Family Coverage server always takes this app's registration, so a refusal means something else
+                // is at the address (a Coverage Log server, say).
+                (e.code == 400 || e.code == 404) && prefs.deviceStatus != "approved" ->
+                    "the server didn't take this phone (HTTP ${e.code}): it doesn't look like a Family Coverage " +
+                        "server, so check its address under Edit the household"
                 else -> "server answered HTTP ${e.code}"
             }
         } catch (e: Exception) {

@@ -21,6 +21,11 @@ Install Family Coverage and choose **Start a household**:
 - the **end date**;
 - a **server**, only if you run one (most households don't: [see the server page](server)).
 
+When you enter a server, the app checks it before saving: ✓ when it's a Family Coverage server that takes your
+household, ✗ when something else answers at that address (another kind of server, say), and ▲ when there's no answer
+from where you are, which is expected away from a server that's only on your home network or VPN. A phone joining
+with the setup code shows the same check.
+
 Then choose which member you are.
 
 ## 3. Add the other phones

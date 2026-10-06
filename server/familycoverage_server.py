@@ -143,6 +143,21 @@ def clean_member(raw):
     return s
 
 
+def hello(raw_path):
+    """The app's server check: proof that this is a Family Coverage server, and whether it takes the household the
+    app asks about ("ok"), takes any ("any"), or belongs to another one ("other"). It names no household itself."""
+    query = raw_path.split("?", 1)[1] if "?" in raw_path else ""
+    m = re.search(r"(?:^|&)household=([^&]*)", query)
+    asked = m.group(1).lower() if m else ""
+    if not HOUSEHOLD:
+        household = "any"
+    elif not asked:
+        household = "locked"
+    else:
+        household = "ok" if asked == HOUSEHOLD else "other"
+    return {"app": "family-coverage", "api": 1, "household": household}
+
+
 def load_devices():
     try:
         return json.loads(devices_file().read_text(encoding="utf-8"))
@@ -516,6 +531,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, report_page(), "text/html; charset=utf-8")
             except OSError:
                 return self._send(503, {"error": "the report page isn't installed beside the server"})
+        if path == "/api/hello":
+            return self._send(200, hello(self.path))
         if path.startswith("/api/report/"):
             return self._report_get(path)
         if path == "/api/export" or path.startswith("/api/export/"):

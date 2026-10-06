@@ -180,6 +180,30 @@ class LogicTest {
     }
 
     @Test
+    fun serverCheckTellsAFamilyCoverageServerFromAnythingElse() {
+        fun verdict(code: Int, body: String = "", ping: Int? = null) = ServerCheck.classify(code, body, ping).verdict
+        val v = ServerCheck.Verdict.entries.associateBy { it.name }
+        assertEquals(v["OK"], verdict(200, """{"app":"family-coverage","api":1,"household":"any"}"""))
+        assertEquals(v["OK"], verdict(200, """{"app":"family-coverage","api":1,"household":"ok"}"""))
+        assertEquals(v["OTHER_HOUSEHOLD"], verdict(200, """{"app":"family-coverage","api":1,"household":"other"}"""))
+        assertEquals(v["NOT_FAMILY_COVERAGE"], verdict(200, """{"ok":true}""")) // something else that answers
+        assertEquals(v["NOT_FAMILY_COVERAGE"], verdict(200, "<html>a web page</html>"))
+        assertEquals(v["OLDER_SERVER"], verdict(404, ping = 401)) // before /api/hello: the server test wants a key
+        assertEquals(v["NOT_FAMILY_COVERAGE"], verdict(404, ping = 404)) // a Coverage Log server, say
+        assertEquals(v["NOT_FAMILY_COVERAGE"], verdict(400))
+        assertEquals(v["REFUSED"], verdict(403))
+        val moved = ServerCheck.classify(301, "", null, "https://coverage.example.com/")
+        assertEquals(v["REDIRECTS"], moved.verdict)
+        assertTrue(ServerCheck.describe(moved, "0a1b2c3d").contains("https://coverage.example.com/"))
+        assertTrue(ServerCheck.describe(ServerCheck.Result(ServerCheck.Verdict.OTHER_HOUSEHOLD), "0a1b2c3d").contains("0a1b2c3d"))
+        // Every verdict reads with a glyph as well as words: ✓ fine, ✗ won't work, ▲ might work from elsewhere.
+        for (x in ServerCheck.Verdict.entries) {
+            val text = ServerCheck.describe(ServerCheck.Result(x), "0a1b2c3d")
+            assertTrue(text, text.startsWith(if (x.ok) "✓" else if (x.name in setOf("REFUSED", "UNREACHABLE")) "▲" else "✗"))
+        }
+    }
+
+    @Test
     fun consentNamesTheRealEndDateAndServer() {
         val withServer = Consent.text(household, automaticTexts = true, speedTests = true, dataChecks = true)
         assertTrue(withServer.contains("15 November 2026"))

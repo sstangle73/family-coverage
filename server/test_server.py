@@ -98,6 +98,17 @@ class ServerTest(unittest.TestCase):
         self.assertEqual(400, self.call("POST", "/api/upload", None, key=KEY, raw=b"not gzip",
                                         headers={"Content-Encoding": "gzip"})[0])
 
+    def test_hello_says_what_it_is_without_naming_the_household(self):
+        hello = lambda q="": json.loads(self.call("GET", "/api/hello" + q)[1])
+        self.assertEqual({"app": "family-coverage", "api": 1, "household": "any"}, hello("?household=0a1b2c3d"))
+        srv.HOUSEHOLD = "0a1b2c3d"
+        self.assertEqual("ok", hello("?household=0A1B2C3D")["household"])
+        self.assertEqual("other", hello("?household=ffffffff")["household"])
+        self.assertEqual("locked", hello()["household"])
+        self.assertNotIn("0a1b2c3d", json.dumps(hello()))
+        srv.API_NETS = srv._nets("10.0.0.0/8")  # a network the server doesn't serve: refused like the rest of /api
+        self.assertEqual(403, self.call("GET", "/api/hello")[0])
+
     def test_household_lock_and_pending_cap(self):
         srv.HOUSEHOLD = "0a1b2c3d"
         self.assertEqual(403, self.register(household="ffffffff")[0])

@@ -13,6 +13,9 @@ It's one Python file with no dependencies beyond the standard library.
 - **Approves installs by hand.** A new install registers as *pending* and uploads nothing until you approve it,
   after checking its device id on the phone. The server stores only a hash of each install's key.
 - **Serves the report live**, at `/report/`, behind a password you set.
+- **Says what it is:** `GET /api/hello?household=<id>` answers `{"app": "family-coverage", "api": 1, "household":
+  "ok" | "any" | "other"}` without a key, so the app can check an address when a household is set up. It never names
+  the household it belongs to.
 - **Answers the server test:** `/api/test/ping`, a download (`/api/test/down?bytes=N`, at most 2 MB) and an upload
   (at most 1 MB), for approved installs only. `POST /api/test/begin` and `/api/test/end` answer with how the
   server reaches the phone: through Tailscale, whether `tailscale status` shows a direct path or a relay.

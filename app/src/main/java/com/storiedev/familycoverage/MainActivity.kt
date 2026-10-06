@@ -54,6 +54,9 @@ class MainActivity : Activity() {
     private var shownSteps: List<Pair<String, Boolean>>? = null
     private var shownPlacesLocated = false
     private lateinit var uploadButton: Button
+    private lateinit var reportButton: Button
+    private lateinit var filesReportButton: Button
+    private lateinit var dataText: TextView
     private var consentShown = false
     private var settingConsent = false
     private val io = Executors.newSingleThreadExecutor()
@@ -215,17 +218,17 @@ class MainActivity : Activity() {
         root.addView(Ui.button(c, "Leave the household") { leave() })
 
         root.addView(Ui.heading(c, "Your data"))
-        root.addView(
-            Ui.text(
-                c,
-                "Export saves everything this phone recorded as one zip file, wherever you choose. Open the zips from " +
-                    "all your phones together in the report page (on the website), which reads them in your browser " +
-                    "and uploads nothing.",
-                13f,
-            ),
-        )
+        dataText = Ui.text(c, "", 13f)
+        root.addView(dataText)
         root.addView(Ui.button(c, "Export the data") { export() })
-        root.addView(Ui.button(c, "Open the report page") { Ui.openUrl(c, BuildConfig.SITE_URL + "report/") })
+        // With a server, the live report reads every phone's uploads; without one, the website's page reads exports.
+        reportButton = Ui.button(c, "Open the report page") {
+            val server = prefs.household?.server
+            Ui.openUrl(c, if (server != null) Household.liveReportUrl(server) else BuildConfig.SITE_URL + "report/")
+        }
+        root.addView(reportButton)
+        filesReportButton = Ui.button(c, "Report page for exported files") { Ui.openUrl(c, BuildConfig.SITE_URL + "report/") }
+        root.addView(filesReportButton)
         uploadButton = Ui.button(c, "Upload to the server now") {
             if (prefs.household?.server == null) {
                 Ui.toast(c, "This household has no server: the data stays on the phone.")
@@ -669,6 +672,18 @@ class MainActivity : Activity() {
         }
         startButton.text = if (Status.running) "Stop recording" else "Start recording"
         uploadButton.visibility = if (h.server != null) View.VISIBLE else View.GONE
+        val host = h.server?.let { runCatching { Uri.parse(it).host }.getOrNull() ?: it }
+        reportButton.text = if (host != null) "Open the live report" else "Open the report page"
+        filesReportButton.visibility = if (host != null) View.VISIBLE else View.GONE
+        dataText.text = if (host != null) {
+            "The phones copy what they record to $host, whose live report shows every phone's latest readings (it " +
+                "asks for the report password your household set). Export saves this phone's recordings as one zip " +
+                "file, for the report page on the website, which reads them in your browser and uploads nothing."
+        } else {
+            "Export saves everything this phone recorded as one zip file, wherever you choose. Open the zips from all " +
+                "your phones together in the report page (on the website), which reads them in your browser and " +
+                "uploads nothing."
+        }
 
         val lastOk = prefs.lastUploadOkMs.takeIf { it > 0 }?.let {
             Instant.ofEpochMilli(it).atZone(ZoneId.systemDefault()).format(DateTimeFormatter.ofPattern("d MMM HH:mm"))

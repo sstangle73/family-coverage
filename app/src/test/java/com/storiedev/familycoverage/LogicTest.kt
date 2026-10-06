@@ -137,6 +137,12 @@ class LogicTest {
     }
 
     @Test
+    fun liveReportIsOnTheHouseholdServer() {
+        assertEquals("https://coverage.example.com/report/", Household.liveReportUrl("https://coverage.example.com"))
+        assertEquals("http://192.168.1.20:8745/report/", Household.liveReportUrl("http://192.168.1.20:8745/"))
+    }
+
+    @Test
     fun placeIdsAreReadableAndUnique() {
         assertEquals("home", Household.placeId("Home", emptySet()))
         assertEquals("grandma-s-house", Household.placeId("Grandma's House", emptySet()))

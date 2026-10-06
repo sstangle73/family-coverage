@@ -16,7 +16,8 @@ It's a single Python file, standard library only, with a Docker image. In short:
    scan the updated code on the other phones. Each person agrees again, because the data now goes somewhere new.
 4. Approve each phone on the server (`approve <device_id>`). The id is in each phone's status.
 5. Set a report password (`set-report-password`), then open `/report/` on the server: the same report page, live.
-   It's as fresh as the phones' uploads, which come every 15 minutes on Wi-Fi and every hour elsewhere.
+   It's as fresh as the phones' uploads, which come every 15 minutes on Wi-Fi and every hour elsewhere. In the app,
+   **Open the live report** goes there too, once the household has a server.
 6. At the end, `export-zips` writes the same zips the phones export.
 
 On Tailscale, a server that is itself a Tailscale node also records whether each phone reached it directly or

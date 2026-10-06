@@ -71,7 +71,8 @@ a QR code with the camera, battery use or days in a pocket, so a real phone stil
 
 19. Run the server (`server/README.md`), **Edit the household** to set its address, agree again, and approve the phone
     on the server. Within 15 minutes on Wi-Fi, the server's `list` shows the phone approved with a recent *last* time,
-    and `/report/` shows its readings once you enter the report password.
+    and the app's **Open the live report** opens its `/report/`, which shows the readings once you enter the report
+    password.
 20. If the server is a Tailscale node and the phone reaches it through Tailscale: off Wi-Fi, *Last server test* ends
     with *Tailscale direct -> direct* or *derp -> direct* (the first test runs about 7 minutes after recording starts).
 

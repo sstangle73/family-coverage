@@ -162,6 +162,9 @@ data class Household(
             return "$days ${p.times.joinToString(", ")}"
         }
 
+        /** The household server's live report: the same page as the website's, reading the phones' uploads. */
+        fun liveReportUrl(server: String): String = server.trimEnd('/') + "/report/"
+
         /** A stable id for a new place: its name in lower case letters and digits, made unique among [taken]. */
         fun placeId(name: String, taken: Set<String>): String {
             val base = name.lowercase(Locale.US).map { if (it.isLetterOrDigit() && it.code < 128) it else '-' }

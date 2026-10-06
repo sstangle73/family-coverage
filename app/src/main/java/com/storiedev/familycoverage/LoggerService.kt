@@ -97,10 +97,19 @@ class LoggerService : Service() {
         super.onCreate()
         prefs = Prefs(this)
         store = CsvStore.of(this)
-        if (prefs.household == null || prefs.member == null || !goForeground()) {
+        if (prefs.household == null || prefs.member == null) {
             stopSelf()
             return
         }
+        // Recording needs what the Start button asks for. When a permission is taken back, Android kills the app and
+        // restarts the logger without it: it stops rather than record without it (approximate location, say). Then,
+        // or when the start fails, the watchdog says why, if recording should be on.
+        if (Watchdog.missing(this).isNotEmpty() || !goForeground()) {
+            Watchdog.cantStart(this, prefs)
+            stopSelf()
+            return
+        }
+        Watchdog.started(this, prefs)
         thread = HandlerThread("logger").also { it.start() }
         handler = Handler(thread.looper)
         val pm = getSystemService(PowerManager::class.java)
@@ -150,6 +159,7 @@ class LoggerService : Service() {
         when (intent?.action) {
             ACTION_STOP -> {
                 prefs.loggingEnabled = false
+                Watchdog.cancel(this, prefs)
                 stopSelf()
                 return START_NOT_STICKY
             }
@@ -618,6 +628,7 @@ class LoggerService : Service() {
         ended = true
         heartbeat("ENDED")
         prefs.loggingEnabled = false
+        Watchdog.ended(this, prefs, household) // the watchdog stops; after an end date, a notice says so (once)
         netJob {
             if (household?.server != null) upload()
             handler.post { stopSelf() }

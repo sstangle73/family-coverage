@@ -64,6 +64,12 @@
             android:name=".LoggerService"
             android:exported="false"
             android:foregroundServiceType="location" />
+        <!-- The watchdog: every half hour while recording should be on, a check that it still runs. Only the system's
+             job scheduler can bind to it. -->
+        <service
+            android:name=".WatchdogJob"
+            android:exported="false"
+            android:permission="android.permission.BIND_JOB_SERVICE" />
 
         <receiver
             android:name=".BootReceiver"

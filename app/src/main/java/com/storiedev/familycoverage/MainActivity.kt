@@ -305,6 +305,7 @@ class MainActivity : Activity() {
             }
             prefs.loggingEnabled = true
             startForegroundService(Intent(this, LoggerService::class.java))
+            Watchdog.schedule(this) // a check every half hour that it still records, until it's stopped
         }
         ui.postDelayed({ render() }, 500L)
     }
@@ -559,6 +560,9 @@ class MainActivity : Activity() {
             prefs.member = null
             prefs.consentAt = null
             prefs.resetServer()
+            // Recording off for good, even if it had stopped by itself, so no notification asks to fix it.
+            prefs.loggingEnabled = false
+            Watchdog.cancel(this, prefs)
             startActivity(Intent(this, SetupActivity::class.java))
             finish()
         }
@@ -603,6 +607,9 @@ class MainActivity : Activity() {
             "isn't touched.", "Delete") {
             for (f in store.files()) f.delete()
             prefs.saveOffsets(emptyMap())
+            // As when leaving: recording stays off until Start, and nothing asks to fix it.
+            prefs.loggingEnabled = false
+            Watchdog.cancel(this, prefs)
             dataStatus.text = "Deleted $n files."
         }
     }

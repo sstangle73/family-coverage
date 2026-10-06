@@ -129,6 +129,22 @@ class Prefs(context: Context) {
         get() = sp.getString("manifest_sent", null)
         set(v) = sp.edit().putString("manifest_sent", v).apply()
 
+    // ---- When recording stops by itself (Watchdog). ----
+
+    /** The last "stopped recording" notification's reason (a StopCheck.Reason) and when it showed: one a day each. */
+    var stopAlertReason: String?
+        get() = sp.getString("stop_alert_reason", null)
+        set(v) = sp.edit().putString("stop_alert_reason", v).apply()
+
+    var stopAlertAtMs: Long
+        get() = sp.getLong("stop_alert_at", 0L)
+        set(v) = sp.edit().putLong("stop_alert_at", v).apply()
+
+    /** The household and end date whose "finished recording" notice has shown: it shows once. */
+    var endNoticeFor: String?
+        get() = sp.getString("end_notice_for", null)
+        set(v) = sp.edit().putString("end_notice_for", v).apply()
+
     // ---- Test texts. The numbers stay on this phone: never exported, uploaded or logged. ----
 
     var textsEnabled: Boolean

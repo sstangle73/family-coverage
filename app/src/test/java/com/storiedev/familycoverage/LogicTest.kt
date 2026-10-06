@@ -1,5 +1,8 @@
 package com.storiedev.familycoverage
 
+import com.storiedev.familycoverage.StopCheck.Action
+import com.storiedev.familycoverage.StopCheck.Reason
+import com.storiedev.familycoverage.StopCheck.Start
 import org.json.JSONObject
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
@@ -492,5 +495,94 @@ class LogicTest {
         assertEquals("HTTP_ERROR", CheckMath.result(CheckMath.parse("HTTP/1.1 302 Found\r\nLocation: http://topup.example/\r\n\r\n")))
         assertEquals("NO_DATA_NETWORK", CheckMath.classify("connect failed: ENETUNREACH (Network is unreachable)", true))
         assertNotNull(CheckMath.parse("").status ?: "none")
+    }
+
+    // ---- When recording stops by itself --------------------------------------------------------------------------
+
+    /** The watchdog's decision for a phone that should be recording and isn't, with only what differs named. */
+    private fun stopCheck(
+        missing: Set<Reason> = emptySet(),
+        exempt: Boolean = true,
+        start: Start = Start.NOT_TRIED,
+        last: Reason? = null,
+        lastMs: Long = 0L,
+        now: Long = 30 * StopCheck.ALERT_GAP_MS,
+        running: Boolean = false,
+        enabled: Boolean = true,
+        agreed: Boolean = true,
+        setUp: Boolean = true,
+        ended: Boolean = false,
+    ) = StopCheck.decide(setUp, agreed, enabled, ended, running, missing, exempt, start, last, lastMs, now)
+
+    @Test
+    fun stoppedRecordingSaysWhyAndWhatToTap() {
+        // A permission taken back: the most basic one missing names it (no location at all, before its parts).
+        assertEquals(Action.Alert(Reason.LOCATION), stopCheck(missing = setOf(Reason.LOCATION, Reason.BACKGROUND)))
+        assertEquals(Action.Alert(Reason.PRECISE), stopCheck(missing = setOf(Reason.PRECISE)))
+        assertEquals(Action.Alert(Reason.BACKGROUND), stopCheck(missing = setOf(Reason.BACKGROUND)))
+        assertEquals(Action.Alert(Reason.PHONE), stopCheck(missing = setOf(Reason.PHONE)))
+        assertEquals(Action.Alert(Reason.LOCATION), stopCheck(missing = setOf(Reason.PHONE, Reason.LOCATION)))
+        // Everything there, but the start refused: without the battery exemption, that's the fix to ask for.
+        assertEquals(Action.Alert(Reason.BATTERY), stopCheck(exempt = false, start = Start.FAILED))
+        assertEquals(Action.Alert(Reason.OTHER), stopCheck(exempt = true, start = Start.FAILED))
+        // The logger's own failed start names a permission that's off before the battery.
+        assertEquals(Action.Alert(Reason.PHONE), stopCheck(missing = setOf(Reason.PHONE), exempt = false, start = Start.FAILED))
+        // Each says what happened and what to tap, in words of its own.
+        for (reason in Reason.entries) assertTrue(reason.text, reason.text.contains(". Tap"))
+        assertEquals(Reason.entries.size, Reason.entries.map { it.text }.toSet().size)
+        assertEquals("Location access was turned off. Tap to allow it again.", Reason.LOCATION.text)
+        assertEquals("Android didn't let it restart. Tap, then set Battery to Unrestricted.", Reason.BATTERY.text)
+    }
+
+    @Test
+    fun theWatchdogRestartsRecordingWhenEverythingIsThere() {
+        assertEquals(Action.Restart, stopCheck())
+        assertEquals(Action.Restart, stopCheck(exempt = false)) // worth trying: the app may be on screen
+        assertEquals(Action.None, stopCheck(start = Start.STARTED)) // the logger clears any notice once it runs
+        assertEquals(Action.None, stopCheck(running = true))
+        // A permission that's off: no restart (it would fail), the notice instead.
+        assertEquals(Action.Alert(Reason.BACKGROUND), stopCheck(missing = setOf(Reason.BACKGROUND)))
+        // The daily limit never holds back a restart.
+        assertEquals(Action.Restart, stopCheck(last = Reason.BATTERY, lastMs = 30 * StopCheck.ALERT_GAP_MS - 60_000L))
+    }
+
+    @Test
+    fun noStopNoticeWhenThePersonStoppedItHasntAgreedOrTheEndDatePassed() {
+        val off = setOf(Reason.LOCATION, Reason.BACKGROUND)
+        for (start in Start.entries) {
+            assertEquals(Action.None, stopCheck(missing = off, start = start, enabled = false)) // they stopped it
+            assertEquals(Action.None, stopCheck(missing = off, start = start, agreed = false))
+            assertEquals(Action.None, stopCheck(missing = off, start = start, setUp = false))
+            assertEquals(Action.None, stopCheck(missing = off, start = start, ended = true)) // the end notice says it
+            assertEquals(Action.None, stopCheck(exempt = false, start = start, enabled = false))
+        }
+    }
+
+    @Test
+    fun aStopNoticeAtMostOnceADayForEachReason() {
+        val day = StopCheck.ALERT_GAP_MS
+        val now = 30 * day
+        val off = setOf(Reason.LOCATION)
+        fun again(lastMs: Long, last: Reason = Reason.LOCATION) =
+            stopCheck(missing = off, last = last, lastMs = lastMs, now = now)
+        assertEquals(Action.None, again(now - 60 * 60_000L))
+        assertEquals(Action.None, again(now - day + 1))
+        assertEquals(Action.Alert(Reason.LOCATION), again(now - day))
+        // A different reason shows at once.
+        assertEquals(Action.Alert(Reason.LOCATION), again(now - 60_000L, last = Reason.PHONE))
+        val refused = stopCheck(exempt = false, start = Start.FAILED, last = Reason.LOCATION, lastMs = now, now = now)
+        assertEquals(Action.Alert(Reason.BATTERY), refused)
+        // A clock set back doesn't keep it quiet until the clock catches up.
+        assertEquals(Action.Alert(Reason.LOCATION), again(now + day))
+    }
+
+    @Test
+    fun theEndNoticeSaysWhichDatePassedAndWhereTheDataIs() {
+        val end = LocalDate.of(2026, 11, 15)
+        assertEquals(
+            "Recording has ended because the household's end date (15 November 2026) passed. Export the data from the app.",
+            StopCheck.endText(end, server = false),
+        )
+        assertTrue(StopCheck.endText(end, server = true).endsWith("passed. The data is on your household's server."))
     }
 }

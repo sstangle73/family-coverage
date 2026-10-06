@@ -21,5 +21,10 @@ services:
       # FC_HOUSEHOLD: "0a1b2c3d"
       # Who may read /healthz and /metrics (default: private networks only).
       # FC_OPEN_ALLOW: "10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,127.0.0.0/8"
+      # The carriers' claimed coverage beside the phones' on the report's map: the server downloads whole-state files
+      # from the FCC (1 MB for Washington DC, 365 MB for New York; kept in data/fcc-cache), and builds data/fcc.json
+      # daily.
+      # FC_FCC: "auto"
+      # FC_FCC_STATES: "MA,VT"           # only these states (default: every state the phones have readings in)
       TZ: UTC
     mem_limit: 128m

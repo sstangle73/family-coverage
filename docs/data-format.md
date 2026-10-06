@@ -96,7 +96,8 @@ address (the phone was at home).
 
 Not part of an export. The report page's map can show what each carrier claims to the FCC (the National Broadband
 Map's Broadband Data Collection) beside what the phones measured, on the same grid: H3 resolution-9 hexagons. A
-household server serves the file to the live report, or it can be chosen with the zips.
+household server serves the file to the live report, or it can be chosen with the zips. The server can also build it
+(`FC_FCC=auto` or `build-fcc`: see [Running your own server](server)), for the hexagons the phones have readings in.
 
 ```json
 {
@@ -115,6 +116,8 @@ household server serves the file to the live report, or it can be chosen with th
   is on Verizon's network, Cricket on AT&T's).
 - **`domain`:** the area the file covers. A hexagon inside it but in no tier is one the carrier claims nothing for.
   Outside it, there's no data.
+- **`updated`, `source` and `states`:** a file the server builds also says when it was built, where the claims come
+  from, and which states' files it used (FIPS codes, such as `"25"`). The report doesn't need them.
 
 ## usage: mobile data
 

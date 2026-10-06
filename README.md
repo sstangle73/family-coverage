@@ -29,6 +29,10 @@ A phone with two SIMs (a physical SIM and an eSIM, say) measures both networks a
 the cheapest way to try a second carrier: a prepaid eSIM for a month. The report then shows what the second line was
 worth: when one line had no service, whether the other had it, and whether the phone moved mobile data over to it.
 
+For each person, the report also works out how each network would have done wherever they actually went, even a
+network their own phone never carried, from the other phones' readings. And it follows the regular drives and trips,
+with each network's gaps along the way.
+
 ## What it records
 
 For **each SIM**, every 10 seconds while moving and about every 2 minutes while still:

@@ -47,6 +47,7 @@
   th, td { text-align: left; padding: 7px 8px; border-bottom: 1px solid var(--line); vertical-align: middle; white-space: nowrap; }
   th { font-weight: 600; color: var(--muted); font-size: 0.82rem; }
   td.num { font-variant-numeric: tabular-nums; }
+  td.wrap { white-space: normal; min-width: 16em; }
   .net { font-weight: 600; }
   .glyph { display: inline-block; width: 1.2em; text-align: center; }
   .bar { display: inline-flex; align-items: center; gap: 6px; }
@@ -116,6 +117,11 @@
       the same as an hour driving. ▲ marks the best network in each column.</p>
     <div class="panel scroll" id="glance"></div>
 
+    <h2>If everyone were on one network</h2>
+    <p class="muted small">What each person's own time would have looked like on each network, from wherever any phone
+      measured it. That's the fair comparison when the phones carry different networks.</p>
+    <div class="panel scroll" id="verdict"></div>
+
     <h2>Map</h2>
     <p class="muted small">Each hexagon is about 175 m across, on the same grid as the FCC's coverage maps, and shows
       what the phones measured there. With an FCC layer (from your household's server, or a file chosen with the zips),
@@ -152,6 +158,12 @@
 
     <h2>On the move and elsewhere</h2>
     <div id="elsewhere"></div>
+
+    <h2>Trips and regular drives</h2>
+    <p class="muted small">Regular drives are drives between two of your places that happened at least twice; phones in
+      the same car count once. Trips are times a phone spent 40 km or more from Home for 3 hours or more. A gap is 20
+      seconds or more without service on one line. "Map" opens OpenStreetMap in a new tab.</p>
+    <div id="trips"></div>
 
     <h2>Dead spots</h2>
     <p class="muted small">Spots about 100 m across where a network had no service for at least two minutes, worst
@@ -407,6 +419,7 @@ function finishLoad(data) {
     m.set(S.plmn[i], (m.get(S.plmn[i]) || 0) + 1);
   }
   const ownCode = new Map([...codes].map(([k, m]) => [k, [...m.entries()].sort((a, b) => b[1] - a[1])[0][0]]));
+  data.ownCode = ownCode;
   // The rules the family study's importer follows (cell-plan-research docs/signal-logging-import.md):
   // - a signal reading older than 30 s while moving, or 5 minutes while still, doesn't count as signal;
   // - Wi-Fi calling alone isn't coverage. Android says IN_SERVICE for a line registered only for Wi-Fi calling, so
@@ -752,6 +765,239 @@ function batteryUse(data) {
   return out;
 }
 
+/**
+ * Each phone's readings as moments. A phone reads all its SIMs together, under one timestamp, so a moment is one phone
+ * at one time: its SIMs' rows, where it was, whether it was moving, and the time it stands for (until the phone's next
+ * moment, capped at 30 s moving and 10 minutes still, as in coverage()). `on` is false in airplane mode.
+ */
+function moments(data) {
+  const S = data.samples, n = S.ts.length;
+  const order = Array.from({ length: n }, (_, i) => i);
+  order.sort((a, b) => (S.dev[a] - S.dev[b]) || (S.ts[a] - S.ts[b]));
+  const out = [];
+  for (let k = 0; k < n;) {
+    const first = order[k], rows = [];
+    let at = first;
+    while (k < n && S.dev[order[k]] === S.dev[first] && S.ts[order[k]] === S.ts[first]) {
+      const i = order[k++];
+      rows.push(i);
+      if (!isFinite(S.lat[at]) && isFinite(S.lat[i])) at = i;
+    }
+    out.push({ dev: S.dev[first], t: S.ts[first], rows, at, lat: S.lat[at], lon: S.lon[at], moving: isMoving(S, at),
+      on: rows.some(i => S.svc[i] !== 0) });
+  }
+  for (let k = 0; k < out.length; k++) {
+    const m = out[k], next = out[k + 1];
+    const same = next !== undefined && next.dev === m.dev;
+    m.w = Math.min(same ? (next.t - m.t) / 1000 : (m.moving ? 10 : 120), m.moving ? 30 : 600);
+  }
+  return out;
+}
+
+/**
+ * Networks rather than carriers: a carrier that runs on another's network (Visible on Verizon's, say) joins that
+ * network, by the network code its SIMs carry. Without codes (the example), each carrier is its own network. With an
+ * FCC layer, a network takes the FCC's name, and the FCC's networks that no SIM was on are listed as unmeasured.
+ */
+function networkGroups(data, fcc) {
+  const S = data.samples, codes = new Map(); // carrier key -> Map(the SIM's own network code -> readings)
+  for (let i = 0; i < S.ts.length; i++) {
+    const code = (data.ownCode && data.ownCode.get(S.dev[i] + "|" + S.sub[i])) || "";
+    if (!code) continue;
+    let m = codes.get(S.net[i]);
+    if (!m) codes.set(S.net[i], m = new Map());
+    m.set(code, (m.get(code) || 0) + 1);
+  }
+  const of = new Map(), byKey = new Map();
+  for (const n of NETS) {
+    if (!n.seen) continue;
+    const m = codes.get(n.key);
+    const code = m ? [...m.entries()].sort((a, b) => b[1] - a[1])[0][0] : "";
+    const key = code ? "code:" + code : "carrier:" + n.key;
+    of.set(n.key, key);
+    let g = byKey.get(key);
+    if (!g) byKey.set(key, g = { key, carriers: [], seen: 0 });
+    g.carriers.push(n.key); // NETS is most-seen first, so the first carrier is the network's main one
+    g.seen += n.seen;
+  }
+  const list = [...byKey.values()].sort((a, b) => b.seen - a.seen), matched = new Set();
+  for (const g of list) {
+    g.main = g.carriers[0];
+    g.fcc = fcc ? fcc.forNet(g.main) : null;
+    if (g.fcc) matched.add(g.fcc.key);
+    const label = NETS.find(x => x.key === g.main).label;
+    g.name = g.fcc ? g.fcc.label : label;
+    g.alone = g.carriers.length === 1 && label === g.name;
+  }
+  const unmeasured = fcc ? fcc.nets.filter(fn => !matched.has(fn.key))
+    .map(fn => ({ key: "fcc:" + fn.key, carriers: [], fcc: fn, name: fn.label })) : [];
+  for (const g of unmeasured) byKey.set(g.key, g);
+  return { list, unmeasured, of, byKey };
+}
+
+/** Each person's time in each hexagon of the map's grid, from their phone's moments; airplane mode left out. */
+function memberTime(data, mom) {
+  const out = new Map();
+  for (const m of mom) {
+    if (!(m.w > 0) || !m.on) continue;
+    const name = who(data.devices[m.dev].member);
+    let e = out.get(name);
+    if (!e) out.set(name, e = { hexes: new Map(), placed: 0, unplaced: 0 });
+    const cell = hexOf(data.samples, m.at, m.moving);
+    if (cell) { e.hexes.set(cell, (e.hexes.get(cell) || 0) + m.w); e.placed += m.w; } else e.unplaced += m.w;
+  }
+  return out;
+}
+
+/** The nearest of the household's places within its circle plus `slack` metres, or null. */
+function placeNear(places, lat, lon, slack) {
+  if (!isFinite(lat) || !isFinite(lon)) return null;
+  let best = null, bd = Infinity;
+  for (const p of places) {
+    const d = distanceM(lat, lon, p.lat, p.lon);
+    if (d <= p.r + slack && d < bd) { best = p; bd = d; }
+  }
+  return best;
+}
+
+/**
+ * Drives: runs of moving moments on one phone, through stops of up to 5 minutes (lights, traffic) and gaps in the
+ * readings of up to 10 minutes. Each runs from where the phone last stood still to where it next did, so its ends can be
+ * matched to the household's places, with 300 m to spare (car parks, the street). Kept from 3 minutes and 1.5 km.
+ */
+function findDrives(mom, places) {
+  const out = [];
+  for (let k = 0; k < mom.length;) {
+    let e = k;
+    while (e < mom.length && mom[e].dev === mom[k].dev) e++;
+    let start = -1, last = -1;
+    const finish = () => {
+      if (start < 0) return;
+      const a = mom[start], b = mom[last];
+      let dist = 0, prev = null;
+      for (let j = start; j <= last; j++) {
+        if (!isFinite(mom[j].lat)) continue;
+        if (prev) dist += distanceM(prev.lat, prev.lon, mom[j].lat, mom[j].lon);
+        prev = mom[j];
+      }
+      let from = a, to = b;
+      for (let j = start - 1; j >= k && a.t - mom[j].t <= 15 * 60e3; j--) if (isFinite(mom[j].lat)) { from = mom[j]; break; }
+      for (let j = last + 1; j < e && mom[j].t - b.t <= 15 * 60e3; j++) {
+        if (isFinite(mom[j].lat) && !mom[j].moving) { to = mom[j]; break; }
+      }
+      if (b.t - a.t >= 3 * 60e3 && dist >= 1500) {
+        const fp = placeNear(places, from.lat, from.lon, 300), tp = placeNear(places, to.lat, to.lon, 300);
+        out.push({ dev: a.dev, first: start, last, t0: a.t, t1: b.t, dist, from: fp && fp.id, to: tp && tp.id });
+      }
+      start = -1;
+    };
+    for (let j = k; j < e; j++) {
+      const m = mom[j];
+      if (start >= 0 && (m.t - mom[j - 1].t > 10 * 60e3 || (!m.moving && m.t - mom[last].t > 5 * 60e3))) finish();
+      if (m.moving) { if (start < 0) start = j; last = j; }
+    }
+    finish();
+    k = e;
+  }
+  return out;
+}
+
+/**
+ * Trips: a phone 40 km or more from Home for 3 hours or more. Gaps in its readings of up to 6 hours (a night with the
+ * phone off, say) don't end one. Phones away at overlapping times make one trip. Newest first, at most 8.
+ */
+function findTrips(mom, home) {
+  const runs = [];
+  for (let k = 0; k < mom.length;) {
+    let e = k, cur = null;
+    while (e < mom.length && mom[e].dev === mom[k].dev) e++;
+    for (let j = k; j < e; j++) {
+      const m = mom[j];
+      if (!isFinite(m.lat)) continue;
+      if (distanceM(m.lat, m.lon, home.lat, home.lon) >= 40000) {
+        if (cur && m.t - mom[cur.last].t > 6 * 3600e3) { runs.push(cur); cur = null; }
+        if (!cur) cur = { dev: m.dev, first: j, last: j };
+        cur.last = j;
+      } else if (cur) {
+        runs.push(cur);
+        cur = null;
+      }
+    }
+    if (cur) runs.push(cur);
+    k = e;
+  }
+  const trips = [];
+  for (const r of runs.filter(r => mom[r.last].t - mom[r.first].t >= 3 * 3600e3).sort((a, b) => mom[a.first].t - mom[b.first].t)) {
+    const t0 = mom[r.first].t, t1 = mom[r.last].t;
+    const tr = trips.find(x => t0 <= x.t1 + 2 * 3600e3 && t1 >= x.t0 - 2 * 3600e3);
+    if (tr) { tr.runs.push(r); tr.t0 = Math.min(tr.t0, t0); tr.t1 = Math.max(tr.t1, t1); } else trips.push({ t0, t1, runs: [r] });
+  }
+  return trips.sort((a, b) => b.t0 - a.t0).slice(0, 8);
+}
+
+/** A spot for gaps that recur: a resolution-8 hexagon (about half a kilometre across), or a 500 m grid without h3. */
+function spotOf(lat, lon) {
+  if (typeof h3 !== "undefined") {
+    const c = h3.latLngToCell(lat, lon, 8), [la, lo] = h3.cellToLatLng(c);
+    return { key: c, lat: la, lon: lo };
+  }
+  const la = Math.round(lat * 200) / 200, lo = Math.round(lon * 200) / 200;
+  return { key: la + "," + lo, lat: la, lon: lo };
+}
+
+/**
+ * Each network's time with and without service over moments [from, to] of one phone, into `acc` (network key ->
+ * totals): its gaps (20 s or more without service on one SIM, each placed at its middle reading), the `tag`s that had
+ * the network (drives, or phones), and with an FCC layer, how much of its time the FCC claims coverage for.
+ */
+function netStretch(data, mom, from, to, groups, fcc, acc, tag) {
+  const S = data.samples, open = new Map(); // SIM -> the gap it's in
+  const get = key => {
+    let a = acc.get(key);
+    if (!a) acc.set(key, a = { up: 0, down: 0, tags: new Set(), gaps: 0, gapTime: 0, longest: 0, spots: new Map(), fccKnown: 0, fccClaimed: 0 });
+    return a;
+  };
+  const close = (sim, r) => {
+    open.delete(sim);
+    if (r.s < 20) return;
+    const a = get(r.key), mid = mom[r.at[r.at.length >> 1]];
+    a.gaps++;
+    a.gapTime += r.s;
+    a.longest = Math.max(a.longest, r.s);
+    if (!isFinite(mid.lat)) return;
+    const sp = spotOf(mid.lat, mid.lon);
+    let e = a.spots.get(sp.key);
+    if (!e) a.spots.set(sp.key, e = { ...sp, tags: new Set(), s: 0, n: 0 });
+    e.tags.add(tag);
+    e.s += r.s;
+    e.n++;
+  };
+  for (let j = from; j <= to; j++) {
+    const m = mom[j], cell = fcc ? hexOf(S, m.at, m.moving) : null;
+    for (const i of m.rows) {
+      const key = groups.of.get(S.net[i]);
+      if (!key || S.svc[i] === 0) continue;
+      const a = get(key), sim = S.dev[i] + "|" + S.sub[i], fn = cell && groups.byKey.get(key).fcc;
+      a.tags.add(tag);
+      if (fn) {
+        const t = fcc.tier(fn, "o", cell);
+        if (t >= 0) { a.fccKnown += m.w; if (t >= 1) a.fccClaimed += m.w; }
+      }
+      if (S.svc[i] === 1) {
+        a.up += m.w;
+        if (open.has(sim)) close(sim, open.get(sim));
+      } else {
+        a.down += m.w;
+        let r = open.get(sim);
+        if (!r) open.set(sim, r = { key, s: 0, at: [] });
+        r.s += m.w;
+        r.at.push(j);
+      }
+    }
+  }
+  for (const [sim, r] of [...open]) close(sim, r);
+}
+
 // ---------------------------------------------------------------------------------------------------------------
 // Rendering. Every network has a colour AND a glyph; every bar has its number; "▲ best" is a word, not a colour.
 // ---------------------------------------------------------------------------------------------------------------
@@ -841,6 +1087,232 @@ const testCols = [
 function rowsFor(bucket, cov, tests) {
   return NETS.map(n => ({ key: n.key, cov: cov.buckets.get(bucket + "|" + n.key), t: tests.get(bucket + "|" + n.key) }))
     .filter(r => (r.cov && r.cov.up + r.cov.down > 0) || (r.t && (r.t.checks || r.t.tests)));
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Everyone on one network; trips and regular drives.
+// ---------------------------------------------------------------------------------------------------------------
+
+const dur = s => s < 90 ? Math.round(s) + " s" : hours(s);
+const and = xs => xs.length < 3 ? xs.join(" and ") : xs.slice(0, -1).join(", ") + " and " + xs[xs.length - 1];
+const osmLink = (lat, lon, z) => `<a href="https://www.openstreetmap.org/?mlat=${lat.toFixed(4)}&mlon=${lon.toFixed(4)}` +
+  `#map=${z}/${lat.toFixed(4)}/${lon.toFixed(4)}" target="_blank" rel="noopener noreferrer">Map</a>`;
+
+/** A network's name: a carrier on its own, or "X's network" with the carriers on it. */
+function groupCell(g) {
+  if (!g.carriers.length) return `<span class="net"><span class="glyph" aria-hidden="true">○</span>${esc(g.name)}</span>`;
+  if (g.alone) return netCell(g.main);
+  const n = NETS.find(x => x.key === g.main), carriers = g.carriers.map(k => NETS.find(x => x.key === k).label);
+  return `<span class="net"><span class="glyph" style="color:var(--n${n.i % 7})" aria-hidden="true">${GLYPHS[n.i % 7]}</span>` +
+    `${esc(g.name)}'s network</span> <span class="few">${esc(carriers.join(", "))}</span>`;
+}
+const groupName = g => g.alone || !g.carriers.length ? g.name : g.name + "'s network";
+
+// Grades with the map's own steps: a glyph and a word with the number, never a colour alone.
+const GRADES = [[0.995, "✓", "reliable"], [0.98, "●", "mostly fine"], [0.9, "▲", "patchy"], [0, "✗", "poor"]];
+function gradeCell(up, down) {
+  const t = up + down;
+  if (t < 1800) return t > 0 ? `<span class="few">${hours(t)}: too little to say</span>` : "–";
+  const f = up / t, [, glyph, word] = GRADES.find(([min]) => f >= min);
+  return `${glyph} ${word} <span class="few">${pct(f)}</span>`;
+}
+
+/** Where a spot is, in words: at a place, or how far from the nearest one, and which way. */
+function nearWords(places, lat, lon) {
+  let best = null, bd = Infinity;
+  for (const p of places) {
+    const d = distanceM(lat, lon, p.lat, p.lon);
+    if (d < bd) { best = p; bd = d; }
+  }
+  if (!best) return `${lat.toFixed(3)}, ${lon.toFixed(3)}`;
+  if (bd < best.r + 200) return `at ${esc(best.name)}`;
+  const bearing = Math.atan2((lon - best.lon) * Math.cos(best.lat * rad), lat - best.lat) / rad;
+  const way = ["north", "north-east", "east", "south-east", "south", "south-west", "west", "north-west"][Math.round(((bearing + 360) % 360) / 45) % 8];
+  return `${(bd / 1000).toFixed(bd < 10000 ? 1 : 0)} km ${way} of ${esc(best.name)}`;
+}
+
+/**
+ * If everyone were on one network: each person's own time, hexagon by hexagon, against how often each network had
+ * service there, from any phone with a SIM on it. Time in hexagons no such phone visited is "not measured"; with an FCC
+ * layer, the FCC's claim (at least LTE, outdoors) is shown for it.
+ */
+function verdictHtml(data, cov, mom, groups, fcc, places) {
+  const time = memberTime(data, mom), members = [...time.keys()];
+  if (!members.length || !groups.list.length) return `<p class="muted">Not enough readings with a location yet.</p>`;
+  const hex = new Map(); // network key -> Map(cell -> { up, down, n })
+  for (const [cell, m] of cov.hexes) for (const [carrier, h] of m) {
+    const key = groups.of.get(carrier);
+    if (!key) continue;
+    let gm = hex.get(key);
+    if (!gm) hex.set(key, gm = new Map());
+    const e = gm.get(cell) || { up: 0, down: 0, n: 0 };
+    e.up += h.up; e.down += h.down; e.n += h.n;
+    gm.set(cell, e);
+  }
+  const all = groups.list.concat(groups.unmeasured), sums = new Map(); // network key -> person ("" everyone) -> sums
+  for (const g of all) {
+    const gm = hex.get(g.key) || new Map(), per = new Map();
+    const everyone = { covered: 0, measured: 0, unknown: 0, claimed: 0, known: 0 };
+    for (const [name, e] of time) {
+      const s = { covered: 0, measured: 0, unknown: 0, claimed: 0, known: 0 };
+      for (const [cell, t] of e.hexes) {
+        const h = gm.get(cell);
+        if (h && h.n >= MAP_MIN_READINGS && h.up + h.down > 0) {
+          s.measured += t;
+          s.covered += t * h.up / (h.up + h.down);
+        } else {
+          s.unknown += t;
+          const tier = g.fcc ? fcc.tier(g.fcc, "o", cell) : -1;
+          if (tier >= 0) { s.known += t; if (tier >= 1) s.claimed += t; }
+        }
+      }
+      per.set(name, s);
+      for (const k in everyone) everyone[k] += s[k];
+    }
+    per.set("", everyone);
+    sums.set(g.key, per);
+  }
+  const share = s => s.covered / s.measured;
+  // Enough to compare: half an hour measured, covering at least 80% of the person's time.
+  const enough = s => s.measured >= 1800 && s.measured >= 0.8 * (s.measured + s.unknown);
+  const ranked = c => groups.list.map(g => [g, sums.get(g.key).get(c)]).filter(([, s]) => enough(s))
+    .sort((a, b) => share(b[1]) - share(a[1]));
+  const says = c => {
+    const r = ranked(c);
+    if (!r.length) return "not enough readings yet to say";
+    const [g1, s1] = r[0];
+    if (r.length < 2) return `${esc(groupName(g1))} had service ${pct(share(s1))} of the time; no other network was measured enough to compare`;
+    const [g2, s2] = r[1], d = share(s1) - share(s2);
+    if (pct(share(s1)) === pct(share(s2))) return `about the same on ${esc(groupName(g1))} and ${esc(groupName(g2))} (${pct(share(s1))})`;
+    return `<strong>${esc(groupName(g1))}</strong> would have had service ${pct(share(s1))} of the time, against ` +
+      `${pct(share(s2))} on ${esc(groupName(g2))}: ${dur(d * (s1.measured + s2.measured) / 2)} less without service`;
+  };
+  const cols = members.length > 1 ? ["", ...members] : members;
+  const best = cols.map(c => {
+    const r = ranked(c);
+    return r.length >= 2 && pct(share(r[0][1])) !== pct(share(r[1][1])) ? r[0][0].key : null;
+  });
+  const cell = (g, c, ci) => {
+    const s = sums.get(g.key).get(c);
+    if (!s.measured) return `not measured` + (s.known ? ` <span class="few">FCC claims ${pct(s.claimed / s.known)}</span>` : "");
+    const unknown = s.unknown / (s.measured + s.unknown);
+    return bar(share(s), g.main, pct(share(s))) + (best[ci] === g.key ? '<span class="best">▲ best</span>' : "") +
+      ` <span class="few">of ${hours(s.measured)}${unknown >= 0.005 ? `; ${pct(unknown)} not measured` : ""}</span>`;
+  };
+  let html = (members.length > 1 ? `<p><strong>Everyone:</strong> ${says("")}.</p>` : "") +
+    members.map(m => `<p><strong>${esc(m)}:</strong> ${says(m)}.</p>`).join("");
+  html += `<table><thead><tr><th>Network</th>${cols.map(c => `<th>${c ? esc(c) : "Everyone"}</th>`).join("")}</tr></thead><tbody>` +
+    all.map(g => `<tr><td>${groupCell(g)}</td>${cols.map((c, ci) => `<td class="num">${cell(g, c, ci)}</td>`).join("")}</tr>`).join("") +
+    "</tbody></table>";
+  // A grade for each place, and on the move.
+  const rows = places.map(p => [esc(p.name), "place:" + p.id]).concat([["On the move", "moving"]]).map(([title, b]) => {
+    const cells = groups.list.map(g => g.carriers.reduce(([up, down], k) => {
+      const s = cov.buckets.get(b + "|" + k);
+      return s ? [up + s.up, down + s.down] : [up, down];
+    }, [0, 0]));
+    return cells.some(([u, d]) => u + d > 0) ? `<tr><td>${title}</td>${cells.map(([u, d]) => `<td class="num">${gradeCell(u, d)}</td>`).join("")}</tr>` : "";
+  }).join("");
+  if (rows) {
+    html += `<h3>At each place</h3><table><thead><tr><th></th>${groups.list.map(g => `<th>${groupCell(g)}</th>`).join("")}` +
+      `</tr></thead><tbody>${rows}</tbody></table>`;
+  }
+  const unmeasured = groups.unmeasured.map(g => esc(g.name));
+  return html + `<p class="small muted">Each person's own time, hexagon by hexagon on the map's grid, against how often ` +
+    `each network had service in that hexagon, from any phone with a SIM on that network. A carrier that runs on ` +
+    `another's network counts as that network, by the network code its SIMs carry (Visible as Verizon's, say). "Not ` +
+    `measured" is time in hexagons that no phone with that network visited` +
+    (fcc ? `; there, the FCC's claim (at least LTE, outdoors) is all there is` : "") + `. ` +
+    (unmeasured.length ? `No phone here had a SIM on ${and(unmeasured)}. ` : "") +
+    `Grades: ✓ reliable at 99.5% or more, ● mostly fine from 98%, ▲ patchy from 90%, ✗ poor below that, from at ` +
+    `least half an hour of readings. Wi-Fi calling alone isn't service, and airplane mode is left out.</p>`;
+}
+
+/** One stretch's networks: time with service, gaps and where they happen, and with an FCC layer, its claim. */
+function stretchTable(acc, groups, places, opts) {
+  const rows = groups.list.filter(g => { const a = acc.get(g.key); return a && a.up + a.down > 0; });
+  if (!rows.length) return `<p class="muted">No readings.</p>`;
+  const withFcc = rows.some(g => acc.get(g.key).fccKnown > 0);
+  return `<table><thead><tr><th>Network</th><th>Time with service</th><th>Gaps of 20 s or more</th><th>Where it drops</th>` +
+    (withFcc ? `<th>FCC claims coverage for</th>` : "") + `</tr></thead><tbody>` +
+    rows.map(g => {
+      const a = acc.get(g.key), t = a.up + a.down;
+      // Spots that recur, or that add up to a minute: a lone short gap is as likely a blip as a place.
+      const spots = [...a.spots.values()].filter(sp => sp.s >= 60 || (opts.drives && sp.tags.size >= 2))
+        .sort((x, y) => (y.tags.size - x.tags.size) || (y.s - x.s)).slice(0, 3);
+      const often = sp => opts.drives
+        ? (sp.tags.size === a.tags.size && a.tags.size > 1 ? "every time" : `${sp.tags.size} of ${a.tags.size} drives`) + `, ${dur(sp.s / sp.n)} each`
+        : `${dur(sp.s)} in all`;
+      return `<tr><td>${groupCell(g)}</td>` +
+        `<td class="num">${bar(a.up / t, g.main, pct(a.up / t))} <span class="few">` +
+        `${opts.drives ? `measured on ${a.tags.size} of ${opts.drives} drives` : `of ${hours(t)} of readings`}</span></td>` +
+        `<td class="num">${a.gaps ? `${a.gaps} <span class="few">${dur(a.gapTime)} in all, the longest ${dur(a.longest)}</span>` : "✓ none"}</td>` +
+        `<td class="wrap">${spots.length ? spots.map(sp => `${nearWords(places, sp.lat, sp.lon)}: ${often(sp)} ${osmLink(sp.lat, sp.lon, 14)}`).join("<br>")
+          : a.gaps ? "short gaps, never twice in one spot" : "–"}</td>` +
+        (withFcc ? `<td class="num">${a.fccKnown ? `${pct(a.fccClaimed / a.fccKnown)} <span class="few">of the time</span>` : "no FCC data"}</td>` : "") +
+        "</tr>";
+    }).join("") + "</tbody></table>";
+}
+
+function tripsHtml(data, mom, groups, fcc, places) {
+  const name = id => esc((places.find(p => p.id === id) || {}).name || id);
+  const people = devs => esc(and([...new Set(devs)].map(d => who(data.devices[d].member))));
+  let html = `<h3>Regular drives</h3>`;
+  const index = new Map(places.map((p, i) => [p.id, i])), routes = new Map();
+  for (const d of findDrives(mom, places)) {
+    if (!d.from || !d.to || d.from === d.to) continue;
+    const [a, b] = index.get(d.from) <= index.get(d.to) ? [d.from, d.to] : [d.to, d.from];
+    let r = routes.get(a + "|" + b);
+    if (!r) routes.set(a + "|" + b, r = { a, b, drives: [] });
+    r.drives.push(d);
+  }
+  const regular = [];
+  for (const r of routes.values()) {
+    // Phones in the same car make one drive: drives on a route that overlap in time count once.
+    r.drives.sort((x, y) => x.t0 - y.t0);
+    let n = 0, end = -Infinity;
+    for (const d of r.drives) {
+      if (d.t0 > end) n++;
+      d.n = n;
+      end = Math.max(end, d.t1);
+    }
+    r.count = n;
+    if (n >= 2) regular.push(r);
+  }
+  regular.sort((x, y) => y.count - x.count);
+  if (!places.length) html += `<p class="muted">Add your places in the app to see the drives between them.</p>`;
+  else if (!regular.length) html += `<p class="muted">No drive between two of your places has happened twice yet.</p>`;
+  for (const r of regular.slice(0, 8)) {
+    const acc = new Map();
+    for (const d of r.drives) netStretch(data, mom, d.first, d.last, groups, fcc, acc, d.n);
+    const typical = median(r.drives.map(d => (d.t1 - d.t0) / 60000));
+    html += `<div class="panel scroll"><h3 style="margin-top:0">${name(r.a)} ↔ ${name(r.b)} <span class="muted small">` +
+      `${r.count} drives by ${people(r.drives.map(d => d.dev))}, typically ${fmt(typical)} minutes</span></h3>` +
+      stretchTable(acc, groups, places, { drives: r.count }) + "</div>";
+  }
+  html += `<h3>Trips away from home</h3>`;
+  const home = places.find(p => p.id === "home") || places.find(p => /\bhome\b/i.test(p.name)) || places[0];
+  if (!home) return html + `<p class="muted">Add a place called Home in the app to see trips away from it.</p>`;
+  const trips = findTrips(mom, home);
+  if (!trips.length) html += `<p class="muted">No phone has been 40 km or more from ${esc(home.name)} for 3 hours yet.</p>`;
+  const day = t => new Date(t).toLocaleDateString(undefined, { day: "numeric", month: "short" });
+  for (const tr of trips) {
+    const acc = new Map();
+    let far = 0, lat = 0, lon = 0, n = 0;
+    for (const r of tr.runs) {
+      netStretch(data, mom, r.first, r.last, groups, fcc, acc, r.dev);
+      for (let j = r.first; j <= r.last; j++) {
+        const m = mom[j];
+        if (!isFinite(m.lat)) continue;
+        far = Math.max(far, distanceM(m.lat, m.lon, home.lat, home.lon));
+        lat += m.lat; lon += m.lon; n++;
+      }
+    }
+    const when = day(tr.t0) === day(tr.t1) ? day(tr.t0) : `${day(tr.t0)} to ${day(tr.t1)}`;
+    html += `<div class="panel scroll"><h3 style="margin-top:0">${when} <span class="muted small">${people(tr.runs.map(r => r.dev))}, ` +
+      `up to ${fmt(far / 1000)} km from ${esc(home.name)} · ${osmLink(lat / n, lon / n, 9)}</span></h3>` +
+      stretchTable(acc, groups, [home], {}) + "</div>"; // far from home, spots are placed from Home
+  }
+  return html;
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -1351,6 +1823,9 @@ function render(data) {
   document.getElementById("glance").innerHTML =
     netTable(rowsFor("all", cov, tests), coverageCols) + "<h3>Data</h3>" + netTable(rowsFor("all", cov, tests), testCols);
 
+  const fcc = fccModel(data.fcc, data), mom = moments(data), groups = networkGroups(data, fcc);
+  document.getElementById("verdict").innerHTML = verdictHtml(data, cov, mom, groups, fcc, places);
+
   document.getElementById("places").innerHTML = places.length ? places.map(p => {
     const rows = rowsFor("place:" + p.id, cov, tests);
     return `<div class="panel scroll"><h3 style="margin-top:0">${esc(p.name)} <span class="muted small">(${p.r} m around)</span></h3>` +
@@ -1362,6 +1837,8 @@ function render(data) {
     return `<div class="panel scroll"><h3 style="margin-top:0">${title}</h3>` +
       (rows.length ? netTable(rows, coverageCols) : `<p class="muted">No readings.</p>`) + "</div>";
   }).join("");
+
+  document.getElementById("trips").innerHTML = tripsHtml(data, mom, groups, fcc, places);
 
   // Dead spots: at least 2 minutes without service on some network, seen in at least two readings (one lone reading
   // is as likely a blip as a spot).
@@ -1461,7 +1938,7 @@ function render(data) {
     `<p>Family Coverage is free and open source, by StorieDev.</p>`;
 
   document.getElementById("report").classList.remove("hidden");
-  MapView.update(cov, places, fccModel(data.fcc, data)); // once shown: a hidden canvas has no size to fit or draw into
+  MapView.update(cov, places, fcc); // once shown: a hidden canvas has no size to fit or draw into
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -1514,18 +1991,23 @@ function demoData() {
     { id: "school", name: "School", lat: 38.9800, lon: -95.2100, r: 200 },
     { id: "work", name: "Work", lat: 38.9200, lon: -95.3000, r: 150 },
   ];
+  const lake = { lat: 38.9000, lon: -96.5500 }; // the first weekend's trip, about 110 km west
   const household = { id: "demo0001", name: "The Example family", places };
   // Network quality by place (probability of service, typical RSRP): "Bluewave" strong at home, "Orange Field" at work.
-  const nets = { bluewave: ["Bluewave", { home: [1, -88], school: [0.995, -101], work: [0.93, -116], road: [0.97, -104] }],
-    orange: ["Orange Field", { home: [0.985, -109], school: [0.999, -92], work: [1, -86], road: [0.99, -97] }] };
+  const nets = { bluewave: ["Bluewave", { home: [1, -88], school: [0.995, -101], work: [0.93, -116], road: [0.97, -104],
+      trip: [0.96, -108], lake: [0.9, -114] }],
+    orange: ["Orange Field", { home: [0.985, -109], school: [0.999, -92], work: [1, -86], road: [0.99, -97],
+      trip: [0.975, -104], lake: [0.996, -95] }] };
   if (typeof h3 !== "undefined") {
     // A made-up FCC layer, to show the comparison: Bluewave claims 5G over the whole area (its weak stretch on the
-    // road to work is a gap the claim hides), Orange Field LTE, with fast 5G around the school.
+    // road to work is a gap the claim hides) and LTE at the lake, Orange Field LTE, with fast 5G around the school.
+    // Skyline, which no phone here has, claims LTE around home.
     const around = (p, res, k) => h3.gridDisk(h3.latLngToCell(p.lat, p.lon, res), k);
-    const area = around(places[0], 6, 1);
-    data.fcc = { format: "family-coverage-fcc", version: 1, vintage: "", domain: area, networks: {
-      bluewave: { label: "Bluewave", nets: ["bluewave"], o: { 2: area }, v: { 1: area } },
-      orange: { label: "Orange Field", nets: ["orange field"], o: { 1: area, 3: around(places[1], 7, 1) }, v: { 1: area } },
+    const area = around(places[0], 6, 1), lakeArea = around(lake, 6, 1), both = area.concat(lakeArea);
+    data.fcc = { format: "family-coverage-fcc", version: 1, vintage: "", domain: both, networks: {
+      bluewave: { label: "Bluewave", nets: ["bluewave"], o: { 2: area, 1: lakeArea }, v: { 1: both } },
+      orange: { label: "Orange Field", nets: ["orange field"], o: { 1: both, 3: around(places[1], 7, 1) }, v: { 1: both } },
+      skyline: { label: "Skyline", o: { 1: area }, v: { 1: area } },
     } };
   }
   const start = Date.UTC(2026, 8, 7, 11, 0, 0);
@@ -1537,22 +2019,33 @@ function demoData() {
       for (let m = 0; m < 24 * 60; m += 2) {
         const t = start + d * 864e5 + m * 6e4;
         const hour = (m / 60 + 20) % 24; // local hours from the UTC base
-        const atAway = hour >= 8.5 && hour < 15.5 && (d % 7) < 5;
-        const driving = (hour >= 8 && hour < 8.5) || (hour >= 15.5 && hour < 16);
-        const spot = driving ? "road" : atAway ? route[1] : "home";
-        let p = places.find(x => x.id === spot);
-        if (driving) {
+        const lday = m < 240 ? d - 1 : d; // the local day: each day's readings start at 20:00 the evening before
+        // The first weekend, everyone goes to the lake: out on Saturday morning, back on Sunday afternoon.
+        const tripOut = lday === 5 && hour >= 9 && hour < 10.5, tripBack = lday === 6 && hour >= 15 && hour < 16.5;
+        const atLake = (lday === 5 && hour >= 10.5) || (lday === 6 && hour < 15), onTrip = tripOut || tripBack || atLake;
+        const atAway = !onTrip && hour >= 8.5 && hour < 15.5 && (d % 7) < 5;
+        const commute = !onTrip && (d % 7) < 5 && ((hour >= 8 && hour < 8.5) || (hour >= 15.5 && hour < 16));
+        const driving = commute || tripOut || tripBack;
+        const spot = tripOut || tripBack ? "trip" : atLake ? "lake" : commute ? "road" : atAway ? route[1] : "home";
+        let p = atLake ? lake : places.find(x => x.id === spot);
+        if (commute) {
           // Along the road between home and the day's place: out in the morning, back in the afternoon.
           const dest = places.find(x => x.id === route[1]), home = places[0];
           const f = hour < 12 ? (hour - 8) / 0.5 : 1 - (hour - 15.5) / 0.5;
           p = { lat: home.lat + (dest.lat - home.lat) * f + Math.sin(f * Math.PI) * 0.006, lon: home.lon + (dest.lon - home.lon) * f, f };
         }
+        if (tripOut || tripBack) {
+          const f = tripOut ? (hour - 9) / 1.5 : 1 - (hour - 15) / 1.5, home = places[0];
+          p = { lat: home.lat + (lake.lat - home.lat) * f + Math.sin(f * Math.PI) * 0.04, lon: home.lon + (lake.lon - home.lon) * f, f };
+        }
         let sub = 0;
         for (const [key, [label, q]] of Object.entries(nets)) {
           let [ok, rsrp] = q[spot];
           // A weak stretch on each network's road: Bluewave halfway to work, Orange Field near the school.
-          if (driving && key === "bluewave" && route[1] === "work" && p.f > 0.45 && p.f < 0.7) [ok, rsrp] = [0.55, -121];
-          if (driving && key === "orange" && route[1] === "school" && p.f > 0.7 && p.f < 0.9) [ok, rsrp] = [0.8, -117];
+          if (commute && key === "bluewave" && route[1] === "work" && p.f > 0.45 && p.f < 0.7) [ok, rsrp] = [0.55, -121];
+          if (commute && key === "orange" && route[1] === "school" && p.f > 0.7 && p.f < 0.9) [ok, rsrp] = [0.8, -117];
+          // And a dead stretch on Bluewave on the way to the lake, both ways.
+          if ((tripOut || tripBack) && key === "bluewave" && p.f > 0.55 && p.f < 0.7) [ok, rsrp] = [0.3, -124];
           const up = rnd() < ok;
           const S = data.samples;
           S.ts.push(t); S.dev.push(dev); S.sub.push(sub++); S.net.push(noteNet(data, label, ""));

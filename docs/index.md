@@ -10,7 +10,9 @@ records its signal and runs small tests, on every SIM it has. Then you compare t
 - **Two networks at once.** Put a second carrier's prepaid eSIM in a phone for a month, and it measures both side by
   side, at the same moments and places.
 - **A real comparison.** The [report page](report/) reads every phone's export in your browser and shows time with
-  service, signal, 5G, data checks, speed tests and test texts, for each network at each of your places. A map puts
+  service, signal, 5G, data checks, speed tests and test texts, for each network at each of your places. It answers
+  the question for each person: how each network would have done wherever they actually went. It follows your regular
+  drives and trips, with each network's gaps along the way. A map puts
   what the phones measured beside what each carrier claims to the FCC. For a phone with two lines, it shows what the
   second line covered when the first had none, and whether data moved over. And it shows how fast each phone's
   battery went down. [See an example with made-up data](report/?demo=1).

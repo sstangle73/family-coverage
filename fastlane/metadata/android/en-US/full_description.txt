@@ -14,7 +14,9 @@ For a few weeks, each phone in the household records its signal and runs small t
 
 <b>The report</b>
 <ul>
+<li>For each person: how each network would have done wherever they actually went</li>
 <li>Time with service, signal, 5G, data checks and speed tests, per network, at each of your places and on the move</li>
+<li>Your regular drives and trips, with each network's gaps along the way</li>
 <li>A map of what the phones measured, beside what each carrier claims to the FCC</li>
 <li>For two-SIM phones: what the second line covered when the first had none, and whether data moved over</li>
 <li>Each phone's battery use, parked and on the move</li>

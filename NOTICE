@@ -2,3 +2,6 @@ Family Coverage
 Copyright 2026 StorieDev
 
 This product includes ZXing (https://github.com/zxing/zxing), licensed under the Apache License 2.0.
+
+The report page includes h3-js (https://github.com/uber/h3-js), Copyright Uber Technologies, Inc., licensed under
+the Apache License 2.0.

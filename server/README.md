@@ -69,6 +69,12 @@ the uploads: the phones send theirs every 15 minutes on Wi-Fi and every hour els
 - The page reads each phone as the same zip it would export, and fetches a phone again only after it has uploaded.
 - `set-report-password --stdin` reads the password from standard input instead, for a script.
 
+### The FCC's map beside yours
+
+The live report's map can show what each carrier claims to the FCC next to what the phones measured. Browsers can't
+fetch the FCC's data from another site, so put a layer at `data/fcc.json` (the format is in `docs/data-format.md`),
+and the logged-in report reads it from `/api/report/fcc`.
+
 ## Get the data out
 
 ```bash
@@ -93,6 +99,7 @@ which honours `Range: bytes=N-`) needs the token that `new-export-token` writes 
 | `FC_REPORT_PASSWORD_FILE` | `<FC_DATA>/report_password` | the report password's scrypt hash |
 | `FC_REPORT_HTML` | `report.html` beside the server, else `docs/report/index.html` | the report page |
 | `FC_TAILSCALE` | `tailscale` | the Tailscale CLI, for the server test's path |
+| `FC_FCC_FILE` | `<FC_DATA>/fcc.json` | the carriers' claimed coverage for the report's map, if present |
 
 ### On Tailscale
 

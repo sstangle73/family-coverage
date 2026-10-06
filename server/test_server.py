@@ -26,6 +26,7 @@ class ServerTest(unittest.TestCase):
         srv.DATA = Path(self.tmp.name)
         srv.EXPORT_TOKEN_FILE = srv.DATA / "export_token"
         srv.REPORT_PASSWORD_FILE = srv.DATA / "report_password"
+        srv.FCC_FILE = srv.DATA / "fcc.json"
         srv.FAILS.clear()
         srv.SESSIONS.clear()
         srv.HOUSEHOLD = ""
@@ -227,6 +228,16 @@ class ServerTest(unittest.TestCase):
         self.assertNotEqual(version, again)
         self.assertEqual(404, self.call("GET", "/api/report/zip/0000000000000000", key=token)[0])
         self.assertEqual(401, self.call("GET", f"/api/report/zip/{DEVICE}", key="not-a-session")[0])
+
+    def test_report_serves_an_fcc_layer_when_present(self):
+        srv.write_password_hash("correct horse battery")
+        token = json.loads(self.call("POST", "/api/report/login", {"password": "correct horse battery"}, gz=False)[1])["token"]
+        self.assertEqual(401, self.call("GET", "/api/report/fcc")[0])
+        self.assertEqual(404, self.call("GET", "/api/report/fcc", key=token)[0])
+        srv.FCC_FILE.write_text(json.dumps({"format": "family-coverage-fcc", "version": 1, "networks": {}}))
+        code, body, _ = self.call("GET", "/api/report/fcc", key=token)
+        self.assertEqual(200, code)
+        self.assertEqual("family-coverage-fcc", json.loads(body)["format"])
 
     def test_report_logins_lock_after_five_wrong_passwords(self):
         srv.write_password_hash("correct horse battery")

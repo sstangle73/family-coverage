@@ -23,6 +23,8 @@ Settings (environment):
     FC_EXPORT_TOKEN_FILE   the export API's token (default <FC_DATA>/export_token)
     FC_REPORT_PASSWORD_FILE  the report password's scrypt hash (default <FC_DATA>/report_password)
     FC_REPORT_HTML     the report page (default: report.html beside this file, else ../docs/report/index.html)
+    FC_FCC_FILE        an FCC coverage layer for the report's map (default <FC_DATA>/fcc.json, if present; the format is
+                       in docs/data-format.md)
     FC_TAILSCALE       the tailscale CLI, for the server test's path (default: tailscale). On a server that is itself a
                        Tailscale node, a phone that comes over Tailscale learns whether its path was direct or relayed.
 """
@@ -53,6 +55,7 @@ API_ALLOW = os.environ.get("FC_API_ALLOW", "0.0.0.0/0,::/0")
 OPEN_ALLOW = os.environ.get("FC_OPEN_ALLOW", "10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,127.0.0.0/8,::1/128,fc00::/7")
 EXPORT_TOKEN_FILE = Path(os.environ.get("FC_EXPORT_TOKEN_FILE", str(DATA / "export_token")))
 REPORT_PASSWORD_FILE = Path(os.environ.get("FC_REPORT_PASSWORD_FILE", str(DATA / "report_password")))
+FCC_FILE = Path(os.environ.get("FC_FCC_FILE", str(DATA / "fcc.json")))
 TAILSCALE = os.environ.get("FC_TAILSCALE", "tailscale")
 HERE = Path(__file__).resolve().parent
 REPORT_HTML = Path(os.environ.get("FC_REPORT_HTML") or next(
@@ -534,6 +537,12 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(401, {"error": "enter the report password"})
         if path == "/api/report/devices":
             return self._send(200, report_devices())
+        if path == "/api/report/fcc":
+            # The carriers' claimed coverage for the map, if the household put a layer here. Browsers can't fetch the
+            # FCC's own data from another site, so the server hands it over.
+            if not FCC_FILE.is_file():
+                return self._send(404, {"error": "no FCC layer on this server"})
+            return self._send(200, FCC_FILE.read_bytes())
         m = re.match(r"^/api/report/zip/([0-9a-f]{16})$", path)
         if m:
             data = report_zip(m.group(1))

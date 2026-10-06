@@ -102,7 +102,7 @@
     <p><strong>Drop the export zips here</strong>, or</p>
     <div class="row">
       <label class="button primary" for="files">Choose files</label>
-      <input id="files" type="file" accept=".zip,application/zip" multiple class="hidden">
+      <input id="files" type="file" accept=".zip,application/zip,.json,application/json" multiple class="hidden">
       <button id="demo" type="button">See an example with made-up data</button>
     </div>
     <p id="loadStatus" class="small muted" aria-live="polite"></p>
@@ -118,14 +118,17 @@
 
     <h2>Map</h2>
     <p class="muted small">Each hexagon is about 175 m across, on the same grid as the FCC's coverage maps, and shows
-      what the phones measured there. Drag to move, scroll or pinch to zoom, and tap a hexagon for its numbers. Nothing
-      on the map comes from the internet unless you turn on streets.</p>
+      what the phones measured there. With an FCC layer (from your household's server, or a file chosen with the zips),
+      a pane can show what a carrier claims to the FCC instead. Drag to move, scroll or pinch to zoom, and tap a hexagon
+      for its numbers. Nothing on the map comes from the internet unless you turn on streets.</p>
     <div class="panel" id="mapPanel">
       <div class="maptools">
         <label>Colour by <select id="mapMetric"><option value="svc">Time with service</option>
           <option value="sig">Typical signal</option></select></label>
         <label>Left <select id="mapA"></select></label>
         <label>Right <select id="mapB"></select></label>
+        <label id="mapEnvLabel" class="hidden">FCC claims for <select id="mapEnv"><option value="o">outdoors</option>
+          <option value="v">a moving car</option></select></label>
         <label><input type="checkbox" id="mapStreets"> Streets <span class="muted">(map tiles from OpenStreetMap, which
           then sees the area you look at)</span></label>
         <span><button type="button" id="mapIn" aria-label="Zoom in">+</button>
@@ -140,6 +143,7 @@
       </div>
       <div class="legend" id="mapLegend"></div>
       <div class="small scroll" id="mapInfo" aria-live="polite" style="margin-top:10px"></div>
+      <div class="scroll" id="mapCompare"></div>
     </div>
 
     <h2>At your places</h2>
@@ -773,10 +777,92 @@ const MAP_METRICS = {
 };
 const MAP_MIN_READINGS = 2; // one lone reading is as likely a blip as the hexagon's coverage
 
+/**
+ * The carriers' claimed coverage (the FCC's Broadband Data Collection), from a household server or a file. Each
+ * network's cells are compact (mixed resolutions), so a hexagon's tier is found by testing its parents. Tiers, the best
+ * claimed in a cell: 3 = 5G-NR at 35/3 Mbps, 2 = 5G-NR at 7/1, 1 = LTE at 5/1, 0 = nothing claimed. Outside "domain",
+ * the area the file covers, there's no FCC data at all (-1).
+ */
+function fccModel(fcc, data) {
+  if (!fcc || fcc.format !== "family-coverage-fcc" || typeof h3 === "undefined") return null;
+  const compact = cells => {
+    const set = new Set(cells || []);
+    return { set, res: [...new Set([...set].map(c => h3.getResolution(c)))].sort((a, b) => b - a) };
+  };
+  const within = (c, cell) => c.res.some(r => c.set.has(r === HEX_RES ? cell : h3.cellToParent(cell, r)));
+  const domain = fcc.domain ? compact(fcc.domain) : null;
+  const nets = Object.entries(fcc.networks || {}).map(([key, n]) => ({
+    key, label: n.label || key, plmns: new Set(n.plmns || []), nets: new Set(n.nets || []),
+    tiers: { o: [3, 2, 1].map(t => [t, compact((n.o || {})[t])]), v: [3, 2, 1].map(t => [t, compact((n.v || {})[t])]) },
+    cache: { o: new Map(), v: new Map() },
+  }));
+  const tier = (fn, env, cell) => {
+    const c = fn.cache[env];
+    if (c.has(cell)) return c.get(cell);
+    let t = domain && !within(domain, cell) ? -1 : 0;
+    if (t === 0) for (const [tt, set] of fn.tiers[env]) if (within(set, cell)) { t = tt; break; }
+    c.set(cell, t);
+    return t;
+  };
+  // A measured network's FCC network: by the network code most of its readings carry (Visible is on Verizon's,
+  // Cricket on AT&T's), or by name in the file (the example).
+  const codes = new Map(), S = data.samples;
+  for (let i = 0; i < S.ts.length; i++) {
+    if (!S.plmn[i]) continue;
+    let m = codes.get(S.net[i]);
+    if (!m) codes.set(S.net[i], m = new Map());
+    m.set(S.plmn[i], (m.get(S.plmn[i]) || 0) + 1);
+  }
+  const forNet = net => {
+    const m = codes.get(net), top = m && m.size ? [...m.entries()].sort((a, b) => b[1] - a[1])[0][0] : null;
+    return nets.find(n => n.nets.has(net)) || nets.find(n => top && n.plmns.has(top)) || null;
+  };
+  return { vintage: fcc.vintage || "", nets, tier, forNet };
+}
+
+const FCC_TIER_CLASS = { 3: 0, 2: 1, 1: 2, 0: 4 };
+const FCC_LABELS = ["5G, 35/3 Mbps or better", "5G, 7/1 Mbps", "LTE, 5/1 Mbps", null, "nothing claimed"];
+const FCC_TIER_NAME = { 3: "5G, 35/3 Mbps", 2: "5G, 7/1 Mbps", 1: "LTE", 0: "nothing", "-1": "no FCC data here" };
+
+/** Where the FCC's claims and the phones disagree, per measured network, inside the FCC data's area. */
+function fccCompare(cov, fcc) {
+  if (!fcc) return "";
+  const rows = [];
+  for (const n of NETS) {
+    const fn = fcc.forNet(n.key);
+    if (!fn) continue;
+    let seen = 0, claimed = 0, weak = 0, weakTime = 0, unclaimedOk = 0;
+    for (const [cell, m] of cov.hexes) {
+      const h = m.get(n.key);
+      if (!h || h.n < MAP_MIN_READINGS) continue;
+      const t = fcc.tier(fn, "o", cell);
+      if (t < 0) continue;
+      const total = h.up + h.down, share = h.up / total;
+      seen++;
+      if (t >= 1) {
+        claimed++;
+        if (share < 0.9) { weak++; weakTime += total; }
+      } else if (share >= 0.99) unclaimedOk++;
+    }
+    if (seen) rows.push(`<tr><td>${netCell(n.key)}</td><td>${esc(fn.label)}</td><td class="num">${seen}</td>` +
+      `<td class="num">${claimed} <span class="few">(${pct(claimed / seen)})</span></td>` +
+      `<td class="num">${weak}${weak ? ` <span class="few">(${hours(weakTime)} of readings)</span>` : ""}</td>` +
+      `<td class="num">${unclaimedOk}</td></tr>`);
+  }
+  if (!rows.length) return "";
+  return `<h3>The FCC's map against the phones</h3>` +
+    `<table><thead><tr><th>Network</th><th>On the FCC's map as</th><th>Hexagons with readings</th>` +
+    `<th>FCC claims coverage (outdoors)</th><th>Claimed, but service under 90%</th><th>Not claimed, but service 99%+</th>` +
+    `</tr></thead><tbody>${rows.join("")}</tbody></table>` +
+    `<p class="small muted">From the carriers' own filings with the FCC${fcc.vintage ? ` (as of ${esc(fcc.vintage)})` : ""}, ` +
+    `counting only hexagons inside the area the FCC data covers. A claim means at least LTE at 5/1 Mbps outdoors; the ` +
+    `phones' "service" is any connection, so a claimed hexagon with weak service is a gap the FCC's map doesn't show.</p>`;
+}
+
 const MapView = (() => {
   const TILE = 256, EARTH_M = 40075016.686;
   const st = { hexes: new Map(), places: [], metric: "svc", streets: false, selected: null, view: null, wired: false,
-    panes: [], bounds: new Map(), tiles: new Map() };
+    panes: [], bounds: new Map(), tiles: new Map(), fcc: null, env: "o" };
   const $ = id => document.getElementById(id);
   const css = name => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
   // Web Mercator in zoom-0 pixels, so the optional OpenStreetMap tiles line up.
@@ -791,16 +877,40 @@ const MapView = (() => {
     return b;
   }
 
+  /**
+   * Fits the household's everyday area: its places, or without places, the middle 90% of the readings' time (so one
+   * long drive doesn't shrink everything to dots). Zooming out shows the rest.
+   */
   function fit() {
     let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
     const add = (x, y) => { x0 = Math.min(x0, x); y0 = Math.min(y0, y); x1 = Math.max(x1, x); y1 = Math.max(y1, y); };
-    for (const cell of st.hexes.keys()) { const [lat, lon] = h3.cellToLatLng(cell); add(wx(lon), wy(lat)); }
+    const xs = [], ys = [];
+    for (const [cell, m] of st.hexes) {
+      let t = 0;
+      for (const s of m.values()) t += s.up + s.down;
+      const [lat, lon] = h3.cellToLatLng(cell);
+      xs.push([wx(lon), t]);
+      ys.push([wy(lat), t]);
+    }
+    const quantile = (arr, q) => {
+      const total = arr.reduce((a, [, w]) => a + w, 0);
+      let acc = 0;
+      for (const [v, w] of arr) { acc += w; if (acc >= q * total) return v; }
+      return arr[arr.length - 1][0];
+    };
+    if (xs.length && st.places.length < 2) {
+      xs.sort((a, b) => a[0] - b[0]);
+      ys.sort((a, b) => a[0] - b[0]);
+      add(quantile(xs, 0.05), quantile(ys, 0.05));
+      add(quantile(xs, 0.95), quantile(ys, 0.95));
+    }
     for (const p of st.places) add(wx(p.lon), wy(p.lat));
     if (!isFinite(x0)) { st.view = null; return; }
     const c = st.panes[0].canvas, w = c.clientWidth, h = c.clientHeight;
     if (!w || !h) { st.view = null; return; }
     const span = Math.max((x1 - x0) / w, (y1 - y0) / h, 1e-12);
-    st.view = { x: (x0 + x1) / 2, y: (y0 + y1) / 2, z: Math.max(3, Math.min(17, Math.log2(0.85 / span))) };
+    // At most zoom 15 from a fit: a single place still shows its neighbourhood.
+    st.view = { x: (x0 + x1) / 2, y: (y0 + y1) / 2, z: Math.max(3, Math.min(15, Math.log2(0.8 / span))) };
   }
 
   function zoomAt(pane, px, py, dz) {
@@ -889,7 +999,7 @@ const MapView = (() => {
     g.setTransform(dpr, 0, 0, dpr, 0, 0);
     g.fillStyle = css("--soft");
     g.fillRect(0, 0, w, h);
-    if (!st.view || !pane.net) return;
+    if (!st.view || !(pane.net || pane.fcc)) return;
     const k = 2 ** st.view.z;
     const sx = x => (x - st.view.x) * k + w / 2, sy = y => (y - st.view.y) * k + h / 2;
     const dark = css("--bg").toLowerCase() === "#15171a";
@@ -909,10 +1019,19 @@ const MapView = (() => {
     const metric = MAP_METRICS[st.metric], crosses = [];
     let cellPx = 0;
     for (const [cell, m] of st.hexes) {
-      const s = m.get(pane.net);
-      if (!s || s.n < MAP_MIN_READINGS) continue;
-      const cls = metric.cls(s);
-      if (cls < 0) continue;
+      let cls;
+      if (pane.fcc) {
+        // The FCC's claim, wherever the family has readings on any network.
+        if (![...m.values()].some(s => s.n >= MAP_MIN_READINGS)) continue;
+        const t = st.fcc.tier(pane.fcc, st.env, cell);
+        if (t < 0) continue; // outside the FCC data's area: no data, not "nothing claimed"
+        cls = FCC_TIER_CLASS[t];
+      } else {
+        const s = m.get(pane.net);
+        if (!s || s.n < MAP_MIN_READINGS) continue;
+        cls = metric.cls(s);
+        if (cls < 0) continue;
+      }
       const b = outline(cell);
       const x0 = sx(b[0][0]), y0 = sy(b[0][1]);
       if (x0 < -60 || y0 < -60 || x0 > w + 60 || y0 > h + 60) continue;
@@ -940,10 +1059,11 @@ const MapView = (() => {
       else { g.beginPath(); g.arc(x, y, Math.max(1.3, cellPx * 0.2), 0, 2 * Math.PI); g.fill(); }
     }
 
-    // The household's places: their circles and names.
+    // The household's places: their circles, and their names where they don't land on another name.
     g.font = "600 12px system-ui, sans-serif";
     g.textAlign = "center";
     g.textBaseline = "bottom";
+    const labels = [];
     for (const p of st.places) {
       const x = sx(wx(p.lon)), y = sy(wy(p.lat));
       const r = p.r / (EARTH_M * Math.cos(p.lat * Math.PI / 180) / (TILE * k));
@@ -954,11 +1074,15 @@ const MapView = (() => {
       g.setLineDash([5, 4]);
       g.stroke();
       g.setLineDash([]);
+      const ly = y - Math.max(r, 4) - 3, lw = g.measureText(p.name).width;
+      const box = [x - lw / 2 - 2, ly - 14, x + lw / 2 + 2, ly + 1];
+      if (labels.some(b => box[0] < b[2] && b[0] < box[2] && box[1] < b[3] && b[1] < box[3])) continue;
+      labels.push(box);
       g.lineWidth = 3;
       g.strokeStyle = css("--panel");
-      g.strokeText(p.name, x, y - Math.max(r, 4) - 3);
+      g.strokeText(p.name, x, ly);
       g.fillStyle = css("--ink");
-      g.fillText(p.name, x, y - Math.max(r, 4) - 3);
+      g.fillText(p.name, x, ly);
     }
 
     if (st.selected) {
@@ -989,8 +1113,9 @@ const MapView = (() => {
   function draw() { for (const p of st.panes) if (!p.hidden) drawPane(p); }
 
   function sources() {
-    // Measured networks; the FCC's claims join here once a server provides them.
-    return NETS.map(n => ({ value: "m:" + n.key, net: n.key, label: n.label }));
+    // Measured networks, then the FCC's claims when a server or a file provides them.
+    return NETS.map(n => ({ value: "m:" + n.key, net: n.key, label: n.label }))
+      .concat(st.fcc ? st.fcc.nets.map(f => ({ value: "f:" + f.key, fcc: f, label: f.label + " (FCC claim)" })) : []);
   }
 
   function controls() {
@@ -1007,26 +1132,43 @@ const MapView = (() => {
     if (!st.inited) {
       // At first, the two most-seen networks side by side; after that, whatever the viewer chose stays.
       if (src[0]) a.value = src[0].value;
-      b.value = src[1] ? src[1].value : "";
+      b.value = src[1] && !src[1].fcc ? src[1].value : "";
       st.inited = true;
+    }
+    if (st.fcc && !st.fccInited) {
+      // With FCC data: the first network beside its own carrier's claim.
+      const f = NETS[0] && st.fcc.forNet(NETS[0].key);
+      if (f) b.value = "f:" + f.key;
+      st.fccInited = true;
     }
   }
 
   function sync() {
     st.metric = $("mapMetric").value;
     st.streets = $("mapStreets").checked;
+    st.env = $("mapEnv").value;
+    $("mapEnvLabel").classList.toggle("hidden", !st.fcc);
     const pick = (el, i) => {
       const s = sources().find(x => x.value === el.value);
-      st.panes[i].net = s ? s.net : null;
+      st.panes[i].net = s && s.net ? s.net : null;
+      st.panes[i].fcc = s && s.fcc ? s.fcc : null;
       st.panes[i].hidden = i > 0 && !s;
-      $(i ? "mapTitleB" : "mapTitleA").innerHTML = s ? `${netCell(s.net)} <span class="muted">measured</span>` : "";
+      $(i ? "mapTitleB" : "mapTitleA").innerHTML = !s ? "" : s.fcc
+        ? `<strong>${esc(s.fcc.label)}</strong> <span class="muted">claimed to the FCC, ${st.env === "v" ? "in a moving car" : "outdoors"}` +
+          `${st.fcc.vintage ? `, as of ${esc(st.fcc.vintage)}` : ""}</span>`
+        : `${netCell(s.net)} <span class="muted">measured</span>`;
     };
     pick($("mapA"), 0);
     pick($("mapB"), 1);
     $("mapPaneB").classList.toggle("hidden", st.panes[1].hidden);
     const m = MAP_METRICS[st.metric];
-    $("mapLegend").innerHTML = m.classes.map((label, i) =>
-      `<span><span class="sw" style="background:${MAP_COLOURS[i]}">${i === 4 ? "✕" : ""}</span>${esc(label)}</span>`).join("") +
+    const swatch = (i, label) => `<span><span class="sw" style="background:${MAP_COLOURS[i]}">${i === 4 ? "✕" : ""}</span>${esc(label)}</span>`;
+    const anyFcc = st.panes.some(p => !p.hidden && p.fcc), anyMeasured = st.panes.some(p => !p.hidden && p.net);
+    $("mapLegend").innerHTML =
+      (anyMeasured ? `<span class="muted">Measured:</span>` + m.classes.map((label, i) => swatch(i, label)).join("") : "") +
+      (anyFcc ? `<span style="flex-basis:100%;height:0"></span><span class="muted">FCC claim:</span>` +
+        FCC_LABELS.map((label, i) => (label ? swatch(i, label) : "")).join("") +
+        `<span class="muted">Outside the FCC data's area: not drawn.</span>` : "") +
       `<span class="muted">Hexagons with fewer than ${MAP_MIN_READINGS} readings are left out.</span>`;
   }
 
@@ -1040,17 +1182,23 @@ const MapView = (() => {
       return `<tr><td>${netCell(n.key)}</td><td class="num">${pct(s.up / t)} <span class="few">of ${hours(t)}</span></td>` +
         `<td class="num">${isFinite(s.rsrpMedian) ? Math.round(s.rsrpMedian) + " dBm" : "–"}</td><td class="num">${s.n}</td></tr>`;
     });
+    const claims = st.fcc ? st.fcc.nets.map(f => {
+      const o = st.fcc.tier(f, "o", st.selected), v = st.fcc.tier(f, "v", st.selected);
+      return o < 0 ? `${esc(f.label)}: no FCC data here` :
+        `${esc(f.label)}: ${FCC_TIER_NAME[o]} outdoors, ${FCC_TIER_NAME[v]} in a car`;
+    }) : [];
     el.innerHTML = `<strong>${place ? esc(place.name) : `${lat.toFixed(4)}, ${lon.toFixed(4)}`}</strong> ` +
       `<span class="muted">(this hexagon)</span><table style="margin-top:4px"><thead><tr><th>Network</th>` +
-      `<th>Time with service</th><th>Typical signal</th><th>Readings</th></tr></thead><tbody>${rows.join("")}</tbody></table>`;
+      `<th>Time with service</th><th>Typical signal</th><th>Readings</th></tr></thead><tbody>${rows.join("")}</tbody></table>` +
+      (claims.length ? `<p class="small" style="margin-top:6px"><span class="muted">Claimed to the FCC:</span> ${claims.join(" · ")}</p>` : "");
   }
 
-  function update(cov, places) {
+  function update(cov, places, fcc) {
     if (typeof h3 === "undefined") { $("mapPanel").innerHTML = `<p class="muted">The map couldn't load its grid library.</p>`; return; }
     if (!st.wired) {
       st.panes = [{ canvas: $("mapCanvasA") }, { canvas: $("mapCanvasB") }];
       st.panes.forEach(wire);
-      for (const id of ["mapMetric", "mapA", "mapB", "mapStreets"]) $(id).addEventListener("change", () => { sync(); draw(); });
+      for (const id of ["mapMetric", "mapA", "mapB", "mapStreets", "mapEnv"]) $(id).addEventListener("change", () => { sync(); draw(); });
       $("mapIn").addEventListener("click", () => { const c = st.panes[0].canvas; zoomAt(st.panes[0], c.clientWidth / 2, c.clientHeight / 2, 1); });
       $("mapOut").addEventListener("click", () => { const c = st.panes[0].canvas; zoomAt(st.panes[0], c.clientWidth / 2, c.clientHeight / 2, -1); });
       $("mapFit").addEventListener("click", () => { fit(); draw(); });
@@ -1059,6 +1207,8 @@ const MapView = (() => {
     }
     st.hexes = cov.hexes;
     st.places = places;
+    st.fcc = fcc;
+    $("mapCompare").innerHTML = fccCompare(cov, fcc);
     if (st.selected && !st.hexes.has(st.selected)) st.selected = null;
     controls();
     sync();
@@ -1176,7 +1326,7 @@ function render(data) {
     `<p>Family Coverage is free and open source, by StorieDev.</p>`;
 
   document.getElementById("report").classList.remove("hidden");
-  MapView.update(cov, places); // once shown: a hidden canvas has no size to fit or draw into
+  MapView.update(cov, places, fccModel(data.fcc, data)); // once shown: a hidden canvas has no size to fit or draw into
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -1191,6 +1341,13 @@ async function loadFiles(list) {
   status.textContent = "Reading…";
   for (const f of list) {
     try {
+      if (/\.json$/i.test(f.name || "")) {
+        // A carriers'-coverage layer (format family-coverage-fcc), for the map; anything else is a mistake.
+        const j = JSON.parse(await f.text());
+        if (j.format !== "family-coverage-fcc") throw new Error(f.name + " isn't an FCC coverage layer");
+        data.fcc = j;
+        continue;
+      }
       await loadExport(data, f.name || "export.zip", await readZip(f));
     } catch (e) {
       problems.push(e.message || String(e));
@@ -1226,6 +1383,16 @@ function demoData() {
   // Network quality by place (probability of service, typical RSRP): "Bluewave" strong at home, "Orange Field" at work.
   const nets = { bluewave: ["Bluewave", { home: [1, -88], school: [0.995, -101], work: [0.93, -116], road: [0.97, -104] }],
     orange: ["Orange Field", { home: [0.985, -109], school: [0.999, -92], work: [1, -86], road: [0.99, -97] }] };
+  if (typeof h3 !== "undefined") {
+    // A made-up FCC layer, to show the comparison: Bluewave claims 5G over the whole area (its weak stretch on the
+    // road to work is a gap the claim hides), Orange Field LTE, with fast 5G around the school.
+    const around = (p, res, k) => h3.gridDisk(h3.latLngToCell(p.lat, p.lon, res), k);
+    const area = around(places[0], 6, 1);
+    data.fcc = { format: "family-coverage-fcc", version: 1, vintage: "", domain: area, networks: {
+      bluewave: { label: "Bluewave", nets: ["bluewave"], o: { 2: area }, v: { 1: area } },
+      orange: { label: "Orange Field", nets: ["orange field"], o: { 1: area, 3: around(places[1], 7, 1) }, v: { 1: area } },
+    } };
+  }
   const start = Date.UTC(2026, 8, 7, 11, 0, 0);
   const members = [["Alex", ["home", "work"]], ["Sam", ["home", "school"]]];
   members.forEach(([member, route], dev) => {
@@ -1339,6 +1506,10 @@ async function liveRefresh() {
   try {
     const list = await (await liveApi("/devices")).json();
     let changed = !live.rendered;
+    if (live.fcc === undefined) {
+      // The carriers' claimed coverage, if this server has it: the FCC's API refuses browsers on other sites.
+      try { live.fcc = await (await liveApi("/fcc")).json(); } catch (e) { if (e.message === "locked") throw e; live.fcc = null; }
+    }
     for (const d of list.devices) {
       const have = live.zips.get(d.id);
       if (have && have.version === d.version) { have.meta = d; continue; }
@@ -1351,6 +1522,7 @@ async function liveRefresh() {
     if (changed && live.zips.size) {
       const data = emptyData();
       for (const [id, z] of live.zips) await loadExport(data, id, z.files);
+      data.fcc = live.fcc;
       render(finishLoad(data));
       live.rendered = true;
     }

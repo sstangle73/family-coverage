@@ -92,6 +92,30 @@ recorded. From the end of the test, falling back to the start: `derp_region` is 
 (such as `ord`), `direct_family` is `ipv4` or `ipv6`, and `direct_lan` says whether the direct path was a private
 address (the phone was at home).
 
+## fcc.json: the carriers' claimed coverage (optional)
+
+Not part of an export. The report page's map can show what each carrier claims to the FCC (the National Broadband
+Map's Broadband Data Collection) beside what the phones measured, on the same grid: H3 resolution-9 hexagons. A
+household server serves the file to the live report, or it can be chosen with the zips.
+
+```json
+{
+  "format": "family-coverage-fcc", "version": 1, "vintage": "2025-12-31",
+  "networks": { "verizon": { "label": "Verizon", "plmns": ["311480"],
+                             "o": { "1": ["<H3 cells>"], "2": [], "3": [] }, "v": { "1": [] } } },
+  "domain": ["<H3 cells>"]
+}
+```
+
+- **The tiers,** the best claimed in a cell: `1` is LTE at 5/1 Mbps or better, `2` 5G-NR at 7/1, `3` 5G-NR at
+  35/3.
+- **`o` and `v`:** `o` is outdoors, standing still; `v` is in a moving vehicle.
+- **The cells:** they may be compacted (mixed resolutions, at most 9).
+- **`plmns`:** the network codes on that carrier's network, so a SIM's readings find their carrier's claims (Visible
+  is on Verizon's network, Cricket on AT&T's).
+- **`domain`:** the area the file covers. A hexagon inside it but in no tier is one the carrier claims nothing for.
+  Outside it, there's no data.
+
 ## usage: mobile data
 
 One row per 2 minutes, and whenever the data SIM changes: bytes on the data SIM (`rx_bytes`, `tx_bytes`), of

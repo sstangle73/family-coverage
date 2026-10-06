@@ -83,7 +83,9 @@ a QR code with the camera, battery use or days in a pocket, so a real phone stil
 
 22. **Export the data**, save the zip (Downloads or Drive) and copy it to a computer.
 23. Open `docs/report/index.html` from the source code in a browser (it works straight from the file) and choose the
-    zip. The household, your SIMs' networks and the Home place appear, with no errors.
+    zip. The household, your SIMs' networks and the Home place appear, with no errors. **Battery** shows a rate per
+    hour for the phone (parked, at least), and with two SIMs, **Two lines on one phone** lists any line that lost
+    service off Wi-Fi for two minutes or more (or says none did).
 24. **Stop recording**, **Delete the recorded data**, then **Leave the household**: the welcome screen returns.
 
 ## What to send back

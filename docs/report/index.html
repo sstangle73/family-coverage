@@ -914,7 +914,7 @@ function findTrips(mom, home) {
     for (let j = k; j < e; j++) {
       const m = mom[j];
       if (!isFinite(m.lat)) continue;
-      if (distanceM(m.lat, m.lon, home.lat, home.lon) >= 40000) {
+      if (distanceM(m.lat, m.lon, home.lat, home.lon) >= TRIP_KM * 1000) {
         if (cur && m.t - mom[cur.last].t > 6 * 3600e3) { runs.push(cur); cur = null; }
         if (!cur) cur = { dev: m.dev, first: j, last: j };
         cur.last = j;
@@ -1098,6 +1098,10 @@ const and = xs => xs.length < 3 ? xs.join(" and ") : xs.slice(0, -1).join(", ") 
 const osmLink = (lat, lon, z) => `<a href="https://www.openstreetmap.org/?mlat=${lat.toFixed(4)}&mlon=${lon.toFixed(4)}` +
   `#map=${z}/${lat.toFixed(4)}/${lon.toFixed(4)}" target="_blank" rel="noopener noreferrer">Map</a>`;
 
+/** The household's home: the place called Home, or else the first place. Trips are measured from it. */
+const homeOf = places => places.find(p => p.id === "home") || places.find(p => /\bhome\b/i.test(p.name)) || places[0];
+const TRIP_KM = 40;
+
 /** A network's name: a carrier on its own, or "X's network" with the carriers on it. */
 function groupCell(g) {
   if (!g.carriers.length) return `<span class="net"><span class="glyph" aria-hidden="true">○</span>${esc(g.name)}</span>`;
@@ -1149,17 +1153,30 @@ function verdictHtml(data, cov, mom, groups, fcc, places) {
     e.up += h.up; e.down += h.down; e.n += h.n;
     gm.set(cell, e);
   }
+  // Near home or on a trip (TRIP_KM or more from Home), so one trip can't hide the everyday picture.
+  const home = homeOf(places), far = new Map();
+  const onTrip = cell => {
+    if (!home) return false;
+    if (!far.has(cell)) {
+      const [lat, lon] = h3.cellToLatLng(cell);
+      far.set(cell, distanceM(lat, lon, home.lat, home.lon) >= TRIP_KM * 1000);
+    }
+    return far.get(cell);
+  };
   const all = groups.list.concat(groups.unmeasured), sums = new Map(); // network key -> person ("" everyone) -> sums
+  const zero = () => ({ covered: 0, measured: 0, unknown: 0, claimed: 0, known: 0, near: [0, 0], trips: [0, 0] });
   for (const g of all) {
-    const gm = hex.get(g.key) || new Map(), per = new Map();
-    const everyone = { covered: 0, measured: 0, unknown: 0, claimed: 0, known: 0 };
+    const gm = hex.get(g.key) || new Map(), per = new Map(), everyone = zero();
     for (const [name, e] of time) {
-      const s = { covered: 0, measured: 0, unknown: 0, claimed: 0, known: 0 };
+      const s = zero();
       for (const [cell, t] of e.hexes) {
         const h = gm.get(cell);
         if (h && h.n >= MAP_MIN_READINGS && h.up + h.down > 0) {
+          const part = onTrip(cell) ? s.trips : s.near, up = t * h.up / (h.up + h.down);
           s.measured += t;
-          s.covered += t * h.up / (h.up + h.down);
+          s.covered += up;
+          part[0] += up;
+          part[1] += t;
         } else {
           s.unknown += t;
           const tier = g.fcc ? fcc.tier(g.fcc, "o", cell) : -1;
@@ -1167,7 +1184,9 @@ function verdictHtml(data, cov, mom, groups, fcc, places) {
         }
       }
       per.set(name, s);
-      for (const k in everyone) everyone[k] += s[k];
+      for (const k in everyone) {
+        if (Array.isArray(s[k])) { everyone[k][0] += s[k][0]; everyone[k][1] += s[k][1]; } else everyone[k] += s[k];
+      }
     }
     per.set("", everyone);
     sums.set(g.key, per);
@@ -1183,9 +1202,18 @@ function verdictHtml(data, cov, mom, groups, fcc, places) {
     const [g1, s1] = r[0];
     if (r.length < 2) return `${esc(groupName(g1))} had service ${pct(share(s1))} of the time; no other network was measured enough to compare`;
     const [g2, s2] = r[1], d = share(s1) - share(s2);
-    if (pct(share(s1)) === pct(share(s2))) return `about the same on ${esc(groupName(g1))} and ${esc(groupName(g2))} (${pct(share(s1))})`;
+    // Near home and on trips apart, when both have half an hour on both networks; each names its own leader.
+    const part = (k, words) => {
+      const a = s1[k][0] / s1[k][1], b = s2[k][0] / s2[k][1];
+      if (pct(a) === pct(b)) return `${words}, about the same (${pct(a)})`;
+      const [g, hi, lo] = a > b ? [g1, a, b] : [g2, b, a];
+      return `${words}, ${esc(groupName(g))} had ${pct(hi)} against ${pct(lo)}`;
+    };
+    const split = ["near", "trips"].every(k => s1[k][1] >= 1800 && s2[k][1] >= 1800)
+      ? `. ${part("near", "Near home")}; ${part("trips", "on trips")}` : "";
+    if (pct(share(s1)) === pct(share(s2))) return `about the same on ${esc(groupName(g1))} and ${esc(groupName(g2))} (${pct(share(s1))})` + split;
     return `<strong>${esc(groupName(g1))}</strong> would have had service ${pct(share(s1))} of the time, against ` +
-      `${pct(share(s2))} on ${esc(groupName(g2))}: ${dur(d * (s1.measured + s2.measured) / 2)} less without service`;
+      `${pct(share(s2))} on ${esc(groupName(g2))}: ${dur(d * (s1.measured + s2.measured) / 2)} less without service` + split;
   };
   const cols = members.length > 1 ? ["", ...members] : members;
   const best = cols.map(c => {
@@ -1224,7 +1252,8 @@ function verdictHtml(data, cov, mom, groups, fcc, places) {
     (fcc ? `; there, the FCC's claim (at least LTE, outdoors) is all there is` : "") + `. ` +
     (unmeasured.length ? `No phone here had a SIM on ${and(unmeasured)}. ` : "") +
     `Grades: ✓ reliable at 99.5% or more, ● mostly fine from 98%, ▲ patchy from 90%, ✗ poor below that, from at ` +
-    `least half an hour of readings. Wi-Fi calling alone isn't service, and airplane mode is left out.</p>`;
+    `least half an hour of readings. "Near home" is within ${TRIP_KM} km of ${home ? esc(home.name) : "home"}, and "on ` +
+    `trips" farther. Wi-Fi calling alone isn't service, and airplane mode is left out.</p>`;
 }
 
 /** One stretch's networks: time with service, gaps and where they happen, and with an FCC layer, its claim. */
@@ -1290,7 +1319,7 @@ function tripsHtml(data, mom, groups, fcc, places) {
       stretchTable(acc, groups, places, { drives: r.count }) + "</div>";
   }
   html += `<h3>Trips away from home</h3>`;
-  const home = places.find(p => p.id === "home") || places.find(p => /\bhome\b/i.test(p.name)) || places[0];
+  const home = homeOf(places);
   if (!home) return html + `<p class="muted">Add a place called Home in the app to see trips away from it.</p>`;
   const trips = findTrips(mom, home);
   if (!trips.length) html += `<p class="muted">No phone has been 40 km or more from ${esc(home.name)} for 3 hours yet.</p>`;

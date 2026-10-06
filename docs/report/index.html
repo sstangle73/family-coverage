@@ -159,11 +159,25 @@
       things on this page that go online.</p>
     <div class="panel scroll" id="dead"></div>
 
+    <h2>Two lines on one phone</h2>
+    <p class="muted small">For phones with two SIMs, read at the same moments: when one line had no service, did the
+      other line have it, and was mobile data on the line that worked? A phone can move data by itself when its data
+      line drops (a SIM setting such as "Switch mobile data automatically"). Without that, apps stay offline even while
+      the other line has service, and some phones' backup calling (calls to the dead line over the other line's data)
+      can't help either. Only time off Wi-Fi counts: on Wi-Fi, data and Wi-Fi calling don't need either line.</p>
+    <div class="panel scroll" id="backup"></div>
+
     <h2>Tests</h2>
     <div class="panel scroll" id="tests"></div>
 
     <h2>Mobile data use</h2>
     <div class="panel scroll" id="usage"></div>
+
+    <h2>Battery</h2>
+    <p class="muted small">How fast each phone's battery went down while it recorded, on battery power, parked and on
+      the move. It's the whole phone's use, not only this app's: the screen, other apps and searching for a weak signal
+      all count. Charging, paused recording and gaps of over 15 minutes are left out.</p>
+    <div class="panel scroll" id="battery"></div>
 
     <footer id="notes"></footer>
   </div>
@@ -256,9 +270,9 @@ function emptyData() {
   return {
     devices: [],
     samples: { ts: [], dev: [], sub: [], net: [], svc: [], exact: [], nr: [], norat: [], rsrp: [], lat: [], lon: [], acc: [],
-               spd: [], wifi: [], iw: [], cage: [], fage: [], plmn: [], roam: [], mode: [] },
+               spd: [], wifi: [], iw: [], cage: [], fage: [], plmn: [], roam: [], mode: [], dsim: [] },
     wifiOnly: 0,          // seconds of Wi-Fi calling with no cell, counted as no service
-    checks: [], tests: [], server: [], texts: [], events: [], usage: [],
+    checks: [], tests: [], server: [], texts: [], events: [], usage: [], heartbeat: [],
     nets: new Map(),      // key -> { key, label, counts: Map(label -> n) }
     plmn: new Map(),      // network code -> Map(net key -> samples), to name rows that carry only a code
   };
@@ -330,9 +344,11 @@ async function loadExport(data, name, files) {
         S.plmn.push(plmn || ""); S.roam.push(r[col("roaming")] === "true" ? 1 : 0);
         const mode = col("mode") >= 0 ? r[col("mode")] : "";
         S.mode.push(mode === "MOVING" ? 1 : mode === "STILL" ? 0 : -1);
+        const dataSim = r[col("data_sim")]; // this SIM carried mobile data then
+        S.dsim.push(dataSim === "true" ? 1 : dataSim === "false" ? 0 : -1);
         device.first = Math.min(device.first, t); device.last = Math.max(device.last, t); device.rows++;
       });
-    } else if (["checks", "tests", "server", "tailnet", "texts", "events", "usage"].includes(table)) {
+    } else if (["checks", "tests", "server", "tailnet", "texts", "events", "usage", "heartbeat"].includes(table)) {
       // Coverage Log (the family logger this app grew from) calls its server test "tailnet": same idea, plus the path.
       const out = data[table === "tailnet" ? "server" : table];
       parseCsv(text, hd => { h = hd; }, r => {
@@ -644,6 +660,94 @@ function tallyUsage(data) {
     s.days.add(data.devices[r.dev].member + " " + r.ts.slice(0, 10));
     s.members.add(data.devices[r.dev].member);
     out.set(r.net, s);
+  }
+  return out;
+}
+
+/**
+ * Two lines on one phone. A phone reads all its SIMs at the same moment, under one timestamp, so for each moment one
+ * line had no service: did another line in the phone have it, and was mobile data on a line with service? Off Wi-Fi
+ * only: on Wi-Fi, data and Wi-Fi calling don't need either line. Each reading counts for the time until its SIM's next
+ * one, capped as in coverage(); airplane mode, and moments without another line's reading, are left out.
+ */
+function backupLines(data, places) {
+  const S = data.samples, n = S.ts.length;
+  const order = Array.from({ length: n }, (_, i) => i);
+  order.sort((a, b) => (S.dev[a] - S.dev[b]) || (S.sub[a] - S.sub[b]) || (S.ts[a] - S.ts[b]));
+  const w = new Float64Array(n);
+  for (let k = 0; k < n; k++) {
+    const i = order[k], j = order[k + 1];
+    const same = j !== undefined && S.dev[j] === S.dev[i] && S.sub[j] === S.sub[i];
+    const moving = isMoving(S, i);
+    w[i] = Math.min(same ? (S.ts[j] - S.ts[i]) / 1000 : (moving ? 10 : 120), moving ? 30 : 600);
+  }
+  const moments = new Map(); // "phone|time" -> its readings, one per SIM
+  for (let i = 0; i < n; i++) {
+    const k = S.dev[i] + "|" + S.ts[i], m = moments.get(k);
+    if (m) m.push(i); else moments.set(k, [i]);
+  }
+  const lines = new Map(); // "phone|network" -> { out, covered, moved, stuck, both, other, where }
+  for (const idx of moments.values()) {
+    if (idx.length < 2) continue;
+    for (const i of idx) {
+      if (S.svc[i] !== 2 || !(w[i] > 0) || S.wifi[i]) continue; // in service, airplane mode, or on Wi-Fi
+      const others = idx.filter(j => S.sub[j] !== S.sub[i] && S.svc[j] !== 0);
+      if (!others.length) continue;
+      const k = S.dev[i] + "|" + S.net[i];
+      let s = lines.get(k);
+      if (!s) lines.set(k, s = { dev: S.dev[i], net: S.net[i], out: 0, covered: 0, moved: 0, stuck: 0, both: 0,
+        other: new Map(), where: new Map() });
+      s.out += w[i];
+      const up = others.filter(j => S.svc[j] === 1);
+      if (!up.length) { s.both += w[i]; continue; }
+      s.covered += w[i];
+      for (const j of up) s.other.set(S.net[j], (s.other.get(S.net[j]) || 0) + w[i]);
+      const place = placeOf(places, S.lat[i], S.lon[i], S.acc[i]);
+      const where = place ? "place:" + place : isMoving(S, i) ? "moving" : "elsewhere";
+      s.where.set(where, (s.where.get(where) || 0) + w[i]);
+      if (up.some(j => S.dsim[j] === 1)) s.moved += w[i];
+      else if (S.dsim[i] === 1) s.stuck += w[i];
+    }
+  }
+  return [...lines.values()].filter(s => s.out >= 120).sort((a, b) => (a.dev - b.dev) || (b.out - a.out));
+}
+
+/**
+ * Battery while recording, from the heartbeats (every 2 minutes): the drop per hour on battery power, parked and on
+ * the move. Pairs of heartbeats more than 15 minutes apart, charging, paused recording or a level that rose (plugged
+ * in between two heartbeats) are left out. Moving or parked by the phone's own readings in between.
+ */
+function batteryUse(data) {
+  const S = data.samples;
+  const motion = new Map(); // phone -> [[time, moving]] in time order
+  for (let i = 0; i < S.ts.length; i++) {
+    let m = motion.get(S.dev[i]);
+    if (!m) motion.set(S.dev[i], m = []);
+    m.push([S.ts[i], isMoving(S, i) ? 1 : 0]);
+  }
+  for (const m of motion.values()) m.sort((a, b) => a[0] - b[0]);
+  const movingBetween = (dev, t0, t1) => {
+    const m = motion.get(dev) || [];
+    let lo = 0, hi = m.length;
+    while (lo < hi) { const mid = (lo + hi) >> 1; if (m[mid][0] < t0) lo = mid + 1; else hi = mid; }
+    let mv = 0, all = 0;
+    for (let k = lo; k < m.length && m[k][0] <= t1; k++) { all++; mv += m[k][1]; }
+    return all > 0 && mv * 2 > all;
+  };
+  const rows = data.heartbeat.filter(r => isFinite(num(r.battery_pct))).sort((a, b) => (a.dev - b.dev) || (a.t - b.t));
+  const out = new Map(); // phone -> { parked: [% drop, hours], moving: [...] }
+  for (let k = 0; k + 1 < rows.length; k++) {
+    const a = rows[k], b = rows[k + 1];
+    if (a.dev !== b.dev) continue;
+    const h = (b.t - a.t) / 3.6e6, drop = num(a.battery_pct) - num(b.battery_pct);
+    if (!(h > 0) || h > 0.25 || drop < 0) continue;
+    if (a.charging === "true" || b.charging === "true") continue;
+    if ((a.logger_state || "RUNNING") !== "RUNNING" || (b.logger_state || "RUNNING") !== "RUNNING") continue;
+    let s = out.get(a.dev);
+    if (!s) out.set(a.dev, s = { parked: [0, 0], moving: [0, 0] });
+    const which = movingBetween(a.dev, a.t, b.t) ? s.moving : s.parked;
+    which[0] += drop;
+    which[1] += h;
   }
   return out;
 }
@@ -1274,6 +1378,28 @@ function render(data) {
       `<td><a href="https://www.openstreetmap.org/?mlat=${c.lat}&mlon=${c.lon}#map=17/${c.lat}/${c.lon}" target="_blank" rel="noopener noreferrer">Map</a></td></tr>`).join("") +
     "</tbody></table>" : `<p class="muted">No spot lost service for two minutes or more. 🎉</p>`;
 
+  // Two lines on one phone.
+  const backup = backupLines(data, places);
+  const whereName = b => b === "moving" ? "on the move" : b === "elsewhere" ? "elsewhere" :
+    esc((places.find(p => "place:" + p.id === b) || {}).name || b.slice(6));
+  document.getElementById("backup").innerHTML = backup.length ? `<table><thead><tr><th>Phone</th>` +
+    `<th>No service, off Wi-Fi</th><th>Other line had service</th>` +
+    `<th>Data on a working line</th><th>Data stuck</th><th>Both out</th>` +
+    `<th>Mostly at</th></tr></thead><tbody>` +
+    backup.map(s => {
+      const other = [...s.other.entries()].sort((a, b) => b[1] - a[1])[0];
+      const where = [...s.where.entries()].sort((a, b) => b[1] - a[1]).slice(0, 2).map(([b, v]) => `${whereName(b)} ${hours(v)}`).join(", ");
+      return `<tr><td>${esc(who(data.devices[s.dev].member))}</td><td>${netCell(s.net)} <span class="few">${hours(s.out)}</span></td>` +
+        `<td class="num">${other ? `${bar(s.covered / s.out, other[0], pct(s.covered / s.out))} ${netCell(other[0])}` : "–"}</td>` +
+        `<td class="num">${s.covered ? `${pct(s.moved / s.covered)} <span class="few">${hours(s.moved)}</span>` : "–"}</td>` +
+        `<td class="num">${s.covered ? (s.stuck >= 60 ? "✗ " : "") + `${pct(s.stuck / s.covered)}` + (s.stuck >= 60 ? ` <span class="few">${hours(s.stuck)}</span>` : "") : "–"}</td>` +
+        `<td class="num">${s.both >= 60 ? hours(s.both) : "–"}</td><td>${where || "–"}</td></tr>`;
+    }).join("") + "</tbody></table>" +
+    `<p class="small muted">Lines with at least two minutes without service off Wi-Fi. The data columns are shares of ` +
+    `the time the other line had service. "Data stuck" is when data stayed on the line without service: apps were ` +
+    `offline then, though they needn't have been.</p>` :
+    `<p class="muted">No phone here recorded two lines at once.</p>`;
+
   // Tests: texts, taps, server.
   const texts = tallyTexts(data), taps = tallyTaps(data);
   let t = "";
@@ -1313,6 +1439,15 @@ function render(data) {
       `<td class="num">${(s.bytes / 1e6 / Math.max(1, s.days.size)).toFixed(0)} MB</td><td class="num">${pct(s.bytes ? s.app / s.bytes : NaN)}</td></tr>`).join("") +
     "</tbody></table><p class=\"small muted\">Only on the SIM that carried data at the time. A plan's limit counts all of it, this app's own tests included.</p>" :
     `<p class="muted">No data-use rows.</p>`;
+
+  const battery = batteryUse(data);
+  const rate = ([drop, h]) => h >= 1 ? `${fmt(drop / h, 1)} % an hour <span class="few">over ${hours(h * 3600)}</span>` : "–";
+  document.getElementById("battery").innerHTML = battery.size ? `<table><thead><tr><th>Phone</th><th>Parked</th>` +
+    `<th>On the move</th><th>All the time on battery</th></tr></thead><tbody>` +
+    [...battery.entries()].sort((a, b) => a[0] - b[0]).map(([dev, s]) => `<tr><td>${esc(who(data.devices[dev].member))}</td>` +
+      `<td class="num">${rate(s.parked)}</td><td class="num">${rate(s.moving)}</td>` +
+      `<td class="num">${rate([s.parked[0] + s.moving[0], s.parked[1] + s.moving[1]])}</td></tr>`).join("") +
+    "</tbody></table>" : `<p class="muted">No battery readings in these exports.</p>`;
 
   document.getElementById("notes").innerHTML =
     `<p><strong>How to read this.</strong> "Time with service" leaves out airplane mode, and doesn't count Wi-Fi calling ` +
@@ -1397,6 +1532,7 @@ function demoData() {
   const members = [["Alex", ["home", "work"]], ["Sam", ["home", "school"]]];
   members.forEach(([member, route], dev) => {
     data.devices.push({ member, deviceId: "demo" + dev, household, appVersion: "demo", flavor: "full", file: "example", first: start, last: start + 14 * 864e5, rows: 0 });
+    let battery = 100;
     for (let d = 0; d < 14; d++) {
       for (let m = 0; m < 24 * 60; m += 2) {
         const t = start + d * 864e5 + m * 6e4;
@@ -1425,8 +1561,20 @@ function demoData() {
           S.lat.push(p.lat + (rnd() - 0.5) * 0.001); S.lon.push(p.lon + (rnd() - 0.5) * 0.001); S.acc.push(12);
           S.spd.push(driving ? 15 : 0); S.wifi.push(spot === "home" ? 1 : 0);
           S.exact.push(1); S.norat.push(up ? 0 : 1); S.iw.push(0); S.cage.push(1); S.fage.push(1); S.plmn.push("");
-          S.roam.push(0); S.mode.push(driving ? 1 : 0);
+          S.roam.push(0); S.mode.push(driving ? 1 : 0); S.dsim.push(0);
           data.devices[dev].rows++;
+        }
+        {
+          // Mobile data: Alex's phone keeps it on Bluewave; Sam's moves it to Bluewave whenever Orange Field drops.
+          const S = data.samples, blue = S.ts.length - 2, orange = S.ts.length - 1;
+          const moved = dev === 1 && S.svc[orange] !== 1 && S.svc[blue] === 1;
+          S.dsim[blue] = dev === 0 || moved ? 1 : 0;
+          S.dsim[orange] = dev === 0 || moved ? 0 : 1;
+          // The battery: charging overnight, then down a little each hour parked and faster on the road.
+          const charging = hour >= 22 || hour < 6.5;
+          battery = charging ? Math.min(100, battery + 0.6) : battery - (driving ? 9 : dev === 0 ? 1.3 : 2.1) / 30;
+          data.heartbeat.push({ dev, t, ts: new Date(t).toISOString(), logger_state: "RUNNING",
+            battery_pct: String(Math.max(1, Math.round(battery))), charging: String(charging) });
         }
         if (m % 10 === 0 && spot !== "home") {
           const label = dev === 0 ? "Bluewave" : "Orange Field";

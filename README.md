@@ -26,7 +26,8 @@ school, work, the grandparents', the drive in between. The data stays on your ph
    your browser and uploads nothing.
 
 A phone with two SIMs (a physical SIM and an eSIM, say) measures both networks at once, side by side. That's
-the cheapest way to try a second carrier: a prepaid eSIM for a month.
+the cheapest way to try a second carrier: a prepaid eSIM for a month. The report then shows what the second line was
+worth: when one line had no service, whether the other had it, and whether the phone moved mobile data over to it.
 
 ## What it records
 

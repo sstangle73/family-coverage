@@ -12,6 +12,14 @@ For a few weeks, each phone in the household records its signal and runs small t
 <li>Optional test texts between two household phones at your places, from every SIM, both ways</li>
 </ul>
 
+<b>The report</b>
+<ul>
+<li>Time with service, signal, 5G, data checks and speed tests, per network, at each of your places and on the move</li>
+<li>A map of what the phones measured, beside what each carrier claims to the FCC</li>
+<li>For two-SIM phones: what the second line covered when the first had none, and whether data moved over</li>
+<li>Each phone's battery use, parked and on the move</li>
+</ul>
+
 <b>Made for households</b>
 <ul>
 <li>One phone starts the household; the others join by scanning its QR code</li>

@@ -92,7 +92,9 @@ a QR code with the camera, battery use or days in a pocket, so a real phone stil
 24. Open `docs/report/index.html` from the source code in a browser (it works straight from the file) and choose the
     zip. The household, your SIMs' networks and the Home place appear, with no errors. **Battery** shows a rate per
     hour for the phone (parked, at least), and with two SIMs, **Two lines on one phone** lists any line that lost
-    service off Wi-Fi for two minutes or more (or says none did).
+    service off Wi-Fi for two minutes or more (or says none did). **If everyone were on one network** has a sentence
+    for you and a grade at Home, and **Trips and regular drives** lists any drive between two of your places made twice
+    (or says none was).
 25. **Stop recording**, **Delete the recorded data**, then **Leave the household**: the welcome screen returns.
 
 ## What to send back

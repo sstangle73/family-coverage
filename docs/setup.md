@@ -54,8 +54,9 @@ household's real end date and server. Then work down the **Setup** list:
 Then tap **Start recording**.
 
 If recording ever stops by itself, say because a permission was turned off, a notification says *Family Coverage
-stopped recording* and why: tap it, allow what's marked ✗ and start again. At the end date it stops for good, and a
-notification says so.
+stopped recording* and why: tap it, allow what's marked ✗ and start again. Or, to stop for good, tap **Turn recording
+off** on the notification or in the app, and nothing asks again. At the end date it stops for good, and a notification
+says so.
 
 ## 5. Add your places
 

@@ -69,8 +69,10 @@ a QR code with the camera, battery use or days in a pocket, so a real phone stil
 19. **When recording stops by itself.** While recording, open Android's settings for the app (**App info >
     Permissions > Location**) and choose **Don't allow**. Within seconds, or at most about half an hour (at once with
     `adb shell cmd jobscheduler run -f com.storiedev.familycoverage 1`), a notification says *Family Coverage stopped
-    recording* and *Location access was turned off*. Tapping it opens the app with ✗ on the location steps. Allow
-    location again and **Start recording**: the notification goes.
+    recording* and *Location access was turned off*. Tapping it opens the app with ✗ on the location steps, *▲ Stopped
+    by itself* and a **Turn recording off** button. Allow location again and **Start recording**: the notification
+    goes. Then take location back once more and tap **Turn recording off** on the notification instead: it goes, the
+    app says *Not recording*, and no new notification comes (force the job to check).
 
 ## With a server (optional)
 

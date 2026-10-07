@@ -9,6 +9,7 @@ import android.app.job.JobInfo
 import android.app.job.JobParameters
 import android.app.job.JobScheduler
 import android.app.job.JobService
+import android.content.BroadcastReceiver
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
@@ -28,13 +29,22 @@ class WatchdogJob : JobService() {
     override fun onStopJob(params: JobParameters?): Boolean = false
 }
 
+/** The notification's "Turn recording off": someone who doesn't want it fixed shouldn't be asked again each day. */
+class TurnOffReceiver : BroadcastReceiver() {
+    override fun onReceive(context: Context, intent: Intent) {
+        Watchdog.turnOff(context, Prefs(context))
+    }
+}
+
 /**
  * Says when recording stops by itself, and how to fix it. Taking a permission back in Android's settings kills the
  * app at once; Android then restarts the logger, which finds the permission missing and says so (LoggerService). But
  * Android may not restart it, or may refuse to from the background. So while recording should be on, a job checks
  * about every half hour, in the app's own process, that the logger runs. If it doesn't, the job starts it again when
  * everything it needs is there, and otherwise a notification says why and what to tap, at most once a day for each
- * reason (StopCheck). Boot runs the same check. The end date has a notice of its own, once.
+ * reason (StopCheck). Boot runs the same check. The end date has a notice of its own, once. Turning recording off,
+ * from the notification or the main screen, ends the checks: someone who took a permission back to stop isn't asked
+ * again.
  */
 object Watchdog {
     /** For `adb shell cmd jobscheduler run -f com.storiedev.familycoverage 1` (TESTING.md). */
@@ -46,6 +56,7 @@ object Watchdog {
     // The logger's own notification is 1, and the Play build's test-text reminder 2.
     private const val ALERT_ID = 3
     private const val END_ID = 4
+    private const val TURN_OFF_REQUEST = 5
 
     /** Starts the watchdog, or again with this version's timing: when recording turns on, and at boot or an update. */
     fun schedule(context: Context) {
@@ -60,6 +71,12 @@ object Watchdog {
     fun cancel(context: Context, prefs: Prefs) {
         runCatching { context.getSystemService(JobScheduler::class.java).cancel(JOB_ID) }
         clear(context, prefs)
+    }
+
+    /** Recording off for good, though it had stopped by itself: no more checks, and the notification goes. */
+    fun turnOff(context: Context, prefs: Prefs) {
+        prefs.loggingEnabled = false
+        cancel(context, prefs)
     }
 
     /** The logger started: any "stopped recording" notification goes, and the daily limit starts over. */
@@ -156,12 +173,12 @@ object Watchdog {
     private fun alert(context: Context, prefs: Prefs, reason: StopCheck.Reason) {
         // Without notification permission (Android 13 and later) nothing can show, so nothing counts as said.
         if (!context.getSystemService(NotificationManager::class.java).areNotificationsEnabled()) return
-        show(context, ALERT_ID, "Family Coverage stopped recording", reason.text)
+        show(context, ALERT_ID, "Family Coverage stopped recording", reason.text, turnOff = true)
         prefs.stopAlertReason = reason.name
         prefs.stopAlertAtMs = System.currentTimeMillis()
     }
 
-    private fun show(context: Context, id: Int, title: String, text: String) {
+    private fun show(context: Context, id: Int, title: String, text: String, turnOff: Boolean = false) {
         val nm = context.getSystemService(NotificationManager::class.java)
         nm.createNotificationChannel(
             NotificationChannel(CHANNEL, "Recording stopped", NotificationManager.IMPORTANCE_DEFAULT).apply {
@@ -179,8 +196,13 @@ object Watchdog {
             .setStyle(Notification.BigTextStyle().bigText(text))
             .setContentIntent(open)
             .setAutoCancel(true)
-            .build()
-        runCatching { nm.notify(id, n) }
+        if (turnOff) {
+            val off = PendingIntent.getBroadcast(
+                context, TURN_OFF_REQUEST, Intent(context, TurnOffReceiver::class.java), PendingIntent.FLAG_IMMUTABLE,
+            )
+            n.addAction(Notification.Action.Builder(null, "Turn recording off", off).build())
+        }
+        runCatching { nm.notify(id, n.build()) }
     }
 }
 

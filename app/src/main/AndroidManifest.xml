@@ -83,5 +83,8 @@
         <receiver
             android:name=".TickReceiver"
             android:exported="false" />
+        <receiver
+            android:name=".TurnOffReceiver"
+            android:exported="false" />
     </application>
 </manifest>

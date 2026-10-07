@@ -45,13 +45,18 @@ household's real end date and server. Then work down the **Setup** list:
 |---|---|
 | Location, precise and all the time | Each reading's place, and recording with the screen off |
 | Phone | Each SIM's network, which SIM carries data, and whether a call is on (to pause during calls) |
-| Notifications | The "recording" notification, with its Stop button |
+| Notifications | The "recording" notification, with its Stop button, and a note if recording stops |
 | Battery: unrestricted | So Android doesn't put the recording to sleep |
 | SMS (F-Droid and GitHub build, only with test texts on) | Sending and receiving the test texts |
 
 **Samsung phones** also need Family Coverage in *Settings > Battery > Background usage limits > Never sleeping apps*.
 
 Then tap **Start recording**.
+
+If recording ever stops by itself, say because a permission was turned off, a notification says *Family Coverage
+stopped recording* and why: tap it, allow what's marked ✗ and start again. Or, to stop for good, tap **Turn recording
+off** on the notification or in the app, and nothing asks again. At the end date it stops for good, and a notification
+says so.
 
 ## 5. Add your places
 

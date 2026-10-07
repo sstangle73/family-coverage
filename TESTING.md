@@ -66,27 +66,34 @@ a QR code with the camera, battery use or days in a pocket, so a real phone stil
     minutes. That SIM's line shows `NONE`, then `POWER_OFF` or `OUT_OF_SERVICE`, and `voice IWLAN`: never
     `IN_SERVICE`, because Wi-Fi calling isn't coverage. Turn airplane mode off.
 18. **Restart the phone.** Recording comes back by itself within a minute or two of unlocking.
+19. **When recording stops by itself.** While recording, open Android's settings for the app (**App info >
+    Permissions > Location**) and choose **Don't allow**. Within seconds, or at most about half an hour (at once with
+    `adb shell cmd jobscheduler run -f com.storiedev.familycoverage 1`), a notification says *Family Coverage stopped
+    recording* and *Location access was turned off*. Tapping it opens the app with ✗ on the location steps, *▲ Stopped
+    by itself* and a **Turn recording off** button. Allow location again and **Start recording**: the notification
+    goes. Then take location back once more and tap **Turn recording off** on the notification instead: it goes, the
+    app says *Not recording*, and no new notification comes (force the job to check).
 
 ## With a server (optional)
 
-19. **The server check.** In **Edit the household**, enter `https://example.com` and save: *✗ Something answered at
+20. **The server check.** In **Edit the household**, enter `https://example.com` and save: *✗ Something answered at
     that address, but it isn't a Family Coverage server*, and nothing is saved. Then `http://192.168.1.250` (nothing
     there): *▲ No answer from that address from here* and *Save anyway* / *Change it*; choose **Change it**.
-20. Run the server (`server/README.md`), **Edit the household** to set its address (*✓ Found it*), agree again, and
+21. Run the server (`server/README.md`), **Edit the household** to set its address (*✓ Found it*), agree again, and
     approve the phone on the server. Within 15 minutes on Wi-Fi, the server's `list` shows the phone approved with a
     recent *last* time, and the app's **Open the live report** opens its `/report/`, which shows the readings once you
     enter the report password.
-21. If the server is a Tailscale node and the phone reaches it through Tailscale: off Wi-Fi, *Last server test* ends
+22. If the server is a Tailscale node and the phone reaches it through Tailscale: off Wi-Fi, *Last server test* ends
     with *Tailscale direct -> direct* or *derp -> direct* (the first test runs about 7 minutes after recording starts).
 
 ## Export, report, clean up
 
-22. **Export the data**, save the zip (Downloads or Drive) and copy it to a computer.
-23. Open `docs/report/index.html` from the source code in a browser (it works straight from the file) and choose the
+23. **Export the data**, save the zip (Downloads or Drive) and copy it to a computer.
+24. Open `docs/report/index.html` from the source code in a browser (it works straight from the file) and choose the
     zip. The household, your SIMs' networks and the Home place appear, with no errors. **Battery** shows a rate per
     hour for the phone (parked, at least), and with two SIMs, **Two lines on one phone** lists any line that lost
     service off Wi-Fi for two minutes or more (or says none did).
-24. **Stop recording**, **Delete the recorded data**, then **Leave the household**: the welcome screen returns.
+25. **Stop recording**, **Delete the recorded data**, then **Leave the household**: the welcome screen returns.
 
 ## What to send back
 

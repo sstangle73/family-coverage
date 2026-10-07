@@ -41,6 +41,7 @@ class MainActivity : Activity() {
     private lateinit var consent: CheckBox
     private lateinit var steps: LinearLayout
     private lateinit var startButton: Button
+    private lateinit var turnOffButton: Button
     private lateinit var status: TextView
     private lateinit var placesList: LinearLayout
     private lateinit var sims: RadioGroup
@@ -160,6 +161,12 @@ class MainActivity : Activity() {
         )
         startButton = Ui.button(c, "Start recording") { toggleRecording() }
         root.addView(startButton)
+        // Recording stopped by itself (a permission taken back, say): Start tries again, and this ends the checks.
+        turnOffButton = Ui.button(c, "Turn recording off") {
+            Watchdog.turnOff(c, prefs)
+            render()
+        }
+        root.addView(turnOffButton)
         status = Ui.text(c, "", 13f).apply { typeface = Typeface.MONOSPACE }
         root.addView(status)
 
@@ -305,6 +312,7 @@ class MainActivity : Activity() {
             }
             prefs.loggingEnabled = true
             startForegroundService(Intent(this, LoggerService::class.java))
+            Watchdog.schedule(this) // a check every half hour that it still records, until it's stopped
         }
         ui.postDelayed({ render() }, 500L)
     }
@@ -559,6 +567,9 @@ class MainActivity : Activity() {
             prefs.member = null
             prefs.consentAt = null
             prefs.resetServer()
+            // Recording off for good, even if it had stopped by itself, so no notification asks to fix it.
+            prefs.loggingEnabled = false
+            Watchdog.cancel(this, prefs)
             startActivity(Intent(this, SetupActivity::class.java))
             finish()
         }
@@ -603,6 +614,9 @@ class MainActivity : Activity() {
             "isn't touched.", "Delete") {
             for (f in store.files()) f.delete()
             prefs.saveOffsets(emptyMap())
+            // As when leaving: recording stays off until Start, and nothing asks to fix it.
+            prefs.loggingEnabled = false
+            Watchdog.cancel(this, prefs)
             dataStatus.text = "Deleted $n files."
         }
     }
@@ -671,6 +685,8 @@ class MainActivity : Activity() {
             }
         }
         startButton.text = if (Status.running) "Stop recording" else "Start recording"
+        val stoppedByItself = !Status.running && prefs.loggingEnabled && prefs.consentAt != null && !Config.ended(h.end)
+        turnOffButton.visibility = if (stoppedByItself) View.VISIBLE else View.GONE
         uploadButton.visibility = if (h.server != null) View.VISIBLE else View.GONE
         val host = h.server?.let { runCatching { Uri.parse(it).host }.getOrNull() ?: it }
         reportButton.text = if (host != null) "Open the live report" else "Open the report page"
@@ -690,7 +706,13 @@ class MainActivity : Activity() {
         } ?: "never"
         val store = CsvStore.of(this)
         status.text = buildString {
-            appendLine(if (Status.running) "● Recording" else "○ Not recording")
+            appendLine(
+                when {
+                    Status.running -> "● Recording"
+                    stoppedByItself -> "▲ Stopped by itself: fix what's marked ✗ above and start again, or turn it off"
+                    else -> "○ Not recording"
+                },
+            )
             if (Status.note.isNotBlank()) appendLine("Note: ${Status.note}")
             appendLine("Last sample: ${Status.lastSample}")
             appendLine(Status.sims)

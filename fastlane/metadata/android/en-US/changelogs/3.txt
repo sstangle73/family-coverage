@@ -1,0 +1,1 @@
+For each person, the report now works out how each network would have done wherever they actually went, near home and on trips, even a network their own phone never carried. It follows your regular drives and trips, with each network's gaps along the way and the FCC's claim beside them. And the app tells you when recording stops by itself, with a tap to fix it.

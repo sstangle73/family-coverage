@@ -93,7 +93,8 @@ only: no AndroidX, no Google services. Its one library is ZXing, for QR codes. M
 ## Contributing
 
 Issues and pull requests are welcome. Please keep the two promises the app makes: data stays local unless the
-household sends it somewhere, and nothing records without an end date.
+household sends it somewhere, and nothing records without an end date. A security problem goes privately, as
+[SECURITY.md](SECURITY.md) says, not in an issue.
 
 ## License
 

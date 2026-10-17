@@ -1,6 +1,7 @@
 # Family Coverage privacy policy
 
-*Draft: takes effect with the first public release.*
+*Effective October 16, 2026. It's also part of StorieDev's privacy policy, at
+[storiedev.com/privacy](https://storiedev.com/privacy#family-coverage).*
 
 Family Coverage is made by **StorieDev**, a registered trade name of Steven Storie, a sole proprietor in
 Massachusetts. Questions about privacy: **privacy@storiedev.com**, or PO Box 118, Lenox, MA 01240.
@@ -32,7 +33,8 @@ own after the household's end date.
 - **Your phone.** Rows go into files in the app's own storage on the phone, which other apps can't read. They're
   excluded from cloud backups and phone-to-phone transfers.
 - **Exports you make.** "Export the data" writes a zip to wherever you choose. What happens to it then is up to you.
-  The report page reads exports in your web browser and uploads nothing.
+  The report page reads exports in your web browser and uploads nothing. If you turn on its map's streets, or follow
+  one of its Map links, OpenStreetMap serves the map and sees the area you're looking at.
 - **Your household's server, if it has one.** The phones copy their files to the address your household set up.
   StorieDev doesn't run, see or have access to it. The app refuses to send data over plain http unless the server is
   on your home network or a private VPN. If your household turns on the server's FCC comparison (`FC_FCC=auto`), the

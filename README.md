@@ -7,7 +7,9 @@ school, work, the grandparents', the drive in between. The data stays on your ph
 
 [![Buy me a coffee](https://img.shields.io/badge/Buy%20me%20a%20coffee-stevenstorie-FFDD00?logo=buymeacoffee&logoColor=black)](https://buymeacoffee.com/stevenstorie)
 
-> **Status:** early (0.1). Not released yet: no store listing and no signed builds.
+> **Status:** early (0.1). Get the signed APK from the
+> [latest release](https://github.com/sstangle73/family-coverage/releases/latest) (Android 12 or newer). A Google
+> Play version is on its way.
 
 <p>
   <img src="fastlane/metadata/android/en-US/images/phoneScreenshots/1.png" width="200" alt="The main screen: setup done, recording, and each SIM's network and signal">

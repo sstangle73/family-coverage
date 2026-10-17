@@ -19,7 +19,14 @@ records its signal and runs small tests, on every SIM it has. Then you compare t
 
 ## Getting it
 
-Family Coverage isn't released yet. It will be on F-Droid, on GitHub, and on Google Play.
+Family Coverage runs on Android 12 and newer. On each phone, download the APK from the
+[latest release on GitHub](https://github.com/sstangle73/family-coverage/releases/latest) and open it; Android asks
+once to allow installs from your browser. Then [set up the household](setup).
+
+Every release is signed with the same StorieDev key, so a new version installs over the old one and keeps your
+recordings. To hear about new versions, watch the repository's releases on GitHub. A Google Play version is on its
+way. Google signs that one, so a phone stays with the source it started from: Play can't update an install from
+GitHub, or the other way round.
 
 ## How it works
 

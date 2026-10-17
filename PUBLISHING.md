@@ -10,12 +10,12 @@ For maintainers. Three channels, one codebase:
 
 ## Before the first release
 
-- [ ] **Make the repository public** (GitHub `sstangle73/family-coverage`; the GitLab mirror can stay private).
-- [ ] **GitHub Pages:** Settings → Pages → deploy from `main`, folder `/docs`. That publishes the help pages and the
+- [x] **Make the repository public** (GitHub `sstangle73/family-coverage`; the GitLab mirror can stay private).
+- [x] **GitHub Pages:** Settings → Pages → deploy from `main`, folder `/docs`. That publishes the help pages and the
       report page at `https://sstangle73.github.io/family-coverage/`, which the app links to.
-- [ ] **Privacy policy:** add a Family Coverage section to `storiedev.com/privacy` (the storiedev-web repository),
+- [x] **Privacy policy:** add a Family Coverage section to `storiedev.com/privacy` (the storiedev-web repository),
       from [docs/privacy.md](docs/privacy.md). The app's About links there, and so will the Play listing.
-- [ ] **Signing key**, after the repository is public (GitHub's free plan has an environment's approval step only on
+- [x] **Signing key**, after the repository is public (GitHub's free plan has an environment's approval step only on
       public repositories). Run `pwsh -NoProfile -File tool\New-SigningKey.ps1`: it makes the key (or reuses it) in
       Bitwarden, sets up the `release` environment (your approval, `v*` tags only) with the key as its secrets, and
       pins the certificate's SHA-256 in `.github/workflows/release.yml`. Commit the pin. There's no fallback to the

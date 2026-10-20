@@ -58,6 +58,11 @@ docker compose exec familycoverage python /app/familycoverage_server.py approve 
 `revoke <device_id>` stops an install uploading. Set `FC_HOUSEHOLD` to your household's id (from that status line) so
 other households can't even register. At most 20 installs can wait for approval at once.
 
+`report-from <device_id> <time>` (RFC 3339 with its offset, such as `2026-10-20T00:47:00+00:00`) leaves that install's
+earlier rows out of the live report and `export-zips`: for a phone that recorded before the household was ready, or
+alongside another logger whose readings the report already has. The stored files and the export API stay whole.
+`report-from <device_id> none` undoes it.
+
 ## Watch it live
 
 Set the report's password once (12 characters or more; the server keeps only a scrypt hash of it):

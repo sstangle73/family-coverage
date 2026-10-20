@@ -187,6 +187,36 @@ class ServerTest(unittest.TestCase):
             self.assertEqual(["csv/samples-2026-10-01.csv"], m["files"])
             self.assertEqual(b"ts,member\n1,Sam\n", z.read("csv/samples-2026-10-01.csv"))  # the part row waits
 
+    def test_report_from_leaves_earlier_rows_out_of_the_report_only(self):
+        self.register()
+        self.approve()
+        files = [{"name": "samples-2026-10-01.csv", "offset": 0,
+                  "data": "ts,member\n2026-10-01T08:00:00.1-04:00,Sam\n"},
+                 {"name": "samples-2026-10-02.csv", "offset": 0,
+                  "data": "ts,member\n2026-10-02T07:59:59.999-04:00,Sam\n2026-10-02T08:00:00.000-04:00,Sam\n"}]
+        self.call("POST", "/api/upload", {"files": files}, key=KEY)
+
+        def zipped():
+            buf = io.BytesIO()
+            dev_dir = srv.DATA / "sam" / DEVICE
+            srv.write_device_zip("sam", DEVICE, dev_dir, buf, srv.load_devices())
+            with zipfile.ZipFile(buf) as z:
+                return json.loads(z.read("manifest.json")), {n: z.read(n) for n in z.namelist() if n.startswith("csv/")}
+
+        before = srv.device_version(srv.DATA / "sam" / DEVICE)
+        with self.assertRaises(SystemExit):
+            srv.cli(["x", "report-from", DEVICE, "2026-10-02T08:00:00"])  # no offset
+        srv.cli(["x", "report-from", DEVICE, "2026-10-02T12:00:00+00:00"])
+        manifest, csvs = zipped()
+        self.assertEqual(["csv/samples-2026-10-02.csv"], manifest["files"])
+        self.assertEqual("2026-10-02T12:00:00+00:00", manifest["report_from"])
+        self.assertEqual(b"ts,member\n2026-10-02T08:00:00.000-04:00,Sam\n", csvs["csv/samples-2026-10-02.csv"])
+        # The stored files and the export stay whole, and the page sees a new version.
+        self.assertEqual(2, len(list((srv.DATA / "sam" / DEVICE).glob("samples-*.csv"))))
+        self.assertNotEqual(before, srv.report_devices()["devices"][0]["version"])
+        srv.cli(["x", "report-from", DEVICE, "none"])
+        self.assertEqual(2, len(zipped()[1]))
+
     def test_health_and_metrics_stay_private(self):
         self.assertEqual(200, self.call("GET", "/healthz")[0])
         srv.OPEN_NETS = srv._nets("10.0.0.0/8")

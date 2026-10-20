@@ -10,6 +10,7 @@ except the optional FCC comparison, which also needs the h3 and requests package
     python familycoverage_server.py list                  # registered installs
     python familycoverage_server.py approve <device_id>   # let an install upload (check the id in its app first)
     python familycoverage_server.py revoke <device_id>
+    python familycoverage_server.py report-from <device_id> <time>|none   # the report leaves out earlier rows
     python familycoverage_server.py set-report-password   # asks for the live report's password; --stdin reads it
     python familycoverage_server.py new-export-token      # writes the export token file; prints only its length
     python familycoverage_server.py export-zips <dir>     # one zip per install, in the app's export format
@@ -260,18 +261,58 @@ def device_manifest(member, device_id, dev_dir, devs):
     return manifest
 
 
+def parse_ts(s):
+    """A row's ts as epoch seconds, or None. RFC 3339 with an offset, as the app writes it."""
+    try:
+        t = datetime.fromisoformat(s)
+    except ValueError:
+        return None
+    return t.timestamp() if t.tzinfo else None
+
+
+def report_from(device_id, devs):
+    """(the time an install's report starts, as set by report-from, in epoch seconds; as written), or (None, None)."""
+    raw = devs.get(device_id, {}).get("report_from")
+    t = parse_ts(raw) if isinstance(raw, str) else None
+    return (t, raw) if t is not None else (None, None)
+
+
+def rows_from(data, cut):
+    """Complete rows without those timed before `cut`. The header stays, and so does a row without a readable time."""
+    lines = data.split(b"\n")[:-1]
+    if not lines:
+        return data
+    keep = [lines[0]]
+    for row in lines[1:]:
+        t = parse_ts(row.split(b",", 1)[0].decode("utf-8", "replace"))
+        if t is None or t >= cut:
+            keep.append(row)
+    return b"\n".join(keep) + b"\n"
+
+
 def write_device_zip(member, device_id, dev_dir, fh, devs):
-    """One install's data, laid out like the app's own export, so the report page opens either."""
-    csvs = sorted(f for f in dev_dir.iterdir() if NAME.match(f.name))
+    """One install's data, laid out like the app's own export, so the report page opens either. An install given a
+    report-from time leaves out its earlier rows, and the files left with none."""
+    cut, cut_raw = report_from(device_id, devs)
+    parts = []
+    for f in sorted(f for f in dev_dir.iterdir() if NAME.match(f.name)):
+        rows = complete_rows(f)
+        if cut is not None:
+            rows = rows_from(rows, cut)
+            if rows.count(b"\n") < 2:  # the header alone
+                continue
+        parts.append((f.name, rows))
     manifest = device_manifest(member, device_id, dev_dir, devs)
-    manifest["files"] = [f"csv/{f.name}" for f in csvs]
+    manifest["files"] = [f"csv/{name}" for name, _ in parts]
+    if cut is not None:
+        manifest["report_from"] = cut_raw
     manifest["exported_at"] = datetime.now().astimezone().isoformat(timespec="milliseconds")
     manifest["exported_by"] = "server"
     with zipfile.ZipFile(fh, "w", zipfile.ZIP_DEFLATED) as z:
         z.writestr("manifest.json", json.dumps(manifest, indent=2))
-        for f in csvs:
-            z.writestr(f"csv/{f.name}", complete_rows(f))
-    return len(csvs)
+        for name, rows in parts:
+            z.writestr(f"csv/{name}", rows)
+    return len(parts)
 
 
 def export_zips(out_dir):
@@ -351,9 +392,11 @@ def report_page():
     return re.sub(r"<!--FC_LIVE[^>]*-->", lambda _: live, html, count=1).encode("utf-8")
 
 
-def device_version(dev_dir):
-    """Changes whenever the install's files do, so the page fetches a phone again only after it uploads."""
+def device_version(dev_dir, report_from_raw=None):
+    """Changes whenever the install's files (or its report-from time) do, so the page fetches a phone again only then."""
     h = hashlib.sha1()
+    if report_from_raw:
+        h.update(f"from:{report_from_raw};".encode())
     for f in sorted(dev_dir.iterdir()):
         if NAME.match(f.name) or f.name == "manifest.json":
             st = f.stat()
@@ -369,7 +412,8 @@ def report_devices():
         files = [f for f in dev_dir.iterdir() if NAME.match(f.name)]
         if not files:
             continue
-        out.append({"id": device_id, "member": d.get("member", member), "version": device_version(dev_dir),
+        out.append({"id": device_id, "member": d.get("member", member),
+                    "version": device_version(dev_dir, report_from(device_id, devs)[1]),
                     "files": len(files), "bytes": sum(f.stat().st_size for f in files),
                     "last_upload_epoch": d.get("last_upload_epoch")})
     return {"devices": out}
@@ -1474,6 +1518,22 @@ def cli(argv):
             devs[argv[2]][cmd + "d_at"] = now_iso()
             save_devices(devs)
         print(f"{argv[2]} {devs[argv[2]]['status']}")
+    elif cmd == "report-from" and len(argv) == 4:
+        # The live report and export-zips leave out an install's rows before this time: for a phone that recorded
+        # before the household was ready, or alongside another logger. The files and the export API stay whole.
+        when = argv[3]
+        if when != "none" and parse_ts(when) is None:
+            sys.exit("FAILED: give an RFC 3339 time with its offset, such as 2026-10-20T00:47:00+00:00, or none")
+        with _lock:
+            devs = load_devices()
+            if argv[2] not in devs:
+                sys.exit(f"no device {argv[2]}")
+            if when == "none":
+                devs[argv[2]].pop("report_from", None)
+            else:
+                devs[argv[2]]["report_from"] = when
+            save_devices(devs)
+        print(f"{argv[2]} report from {when}")
     elif cmd == "set-report-password":
         if "--stdin" in argv:
             pw = sys.stdin.readline().rstrip("\r\n")   # PowerShell pipes CRLF

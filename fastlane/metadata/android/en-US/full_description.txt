@@ -12,6 +12,8 @@ For a few weeks, each phone in the household records its signal and runs small t
 <li>Optional test texts between two household phones at your places, from every SIM, both ways</li>
 </ul>
 
+Family Coverage collects location data to compare networks where your household goes, even when the app is closed or not in use: the precise location of each reading, and a GPS track while moving, from when you start recording until the household's end date. It stays on your phones unless your household sets up its own server.
+
 <b>The report</b>
 <ul>
 <li>For each person: how each network would have done wherever they actually went</li>

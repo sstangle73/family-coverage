@@ -14,7 +14,12 @@ debug APK first (./gradlew assembleFullDebug), start an emulator with a Google P
     python tool/store_shots.py reset          # the emulator's screen and status bar back to normal
 
 Everything lands in build/store-shots/. Copy the PNGs to fastlane/metadata/android/en-US/images/ (phoneScreenshots,
-tenInchScreenshots), and upload the video to YouTube, unlisted, for Play's declaration. The steps tap the app's own
+tenInchScreenshots), for F-Droid.
+
+Google Play gets its own set, from the play build (no automatic test texts, Android's battery list instead of the
+exemption dialog): build it (./gradlew assemblePlayDebug) and add --play to every step, after the step's name. That
+set lands in build/store-shots/play/: its PNGs go to store/play/, and its video to YouTube, unlisted, for Play's
+declarations. The steps tap the app's own
 labels, so a renamed button needs the same change here.
 """
 import html
@@ -27,8 +32,10 @@ import time
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
-OUT = REPO / "build" / "store-shots"
-APK = REPO / "app" / "build" / "outputs" / "apk" / "full" / "debug" / "app-full-debug.apk"
+PLAY = "--play" in sys.argv[2:]
+FLAVOR = "play" if PLAY else "full"
+OUT = REPO / "build" / "store-shots" / ("play" if PLAY else "")
+APK = REPO / "app" / "build" / "outputs" / "apk" / FLAVOR / "debug" / f"app-{FLAVOR}-debug.apk"
 PKG = "com.storiedev.familycoverage"
 SDK = Path(os.environ.get("ANDROID_HOME") or os.environ.get("ANDROID_SDK_ROOT")
            or Path(os.environ.get("LOCALAPPDATA", "")) / "Android" / "Sdk")
@@ -57,7 +64,7 @@ def nodes():
         b = [int(x) for x in re.findall(r"\d+", a.get("bounds", ""))]
         if len(b) == 4:
             out.append({"text": a.get("text", ""), "desc": a.get("content-desc", ""),
-                        "x": (b[0] + b[2]) // 2, "y": (b[1] + b[3]) // 2})
+                        "checked": a.get("checked") == "true", "x": (b[0] + b[2]) // 2, "y": (b[1] + b[3]) // 2})
     return out
 
 
@@ -133,6 +140,14 @@ def edit_place(name):
     wait("Whose test texts")
 
 
+def members_for(*names):
+    """Ticks exactly these members in a place's dialog, whatever it started with."""
+    for member in ("Alex", "Sam", "Jo"):
+        n = next(x for x in nodes() if x["text"] == member)
+        if n["checked"] != (member in names):
+            tap_at(n)
+
+
 def demo_bar():
     adb("shell", "settings", "put", "global", "sysui_demo_allowed", "1")
     for extra in (
@@ -178,38 +193,64 @@ def step_household():
 
 def step_permissions():
     for step, button in (("Location: precise", "While using the app"), ("Phone: read each SIM", "Allow"),
-                         ("Notifications: tap", "Allow"), ("Battery: unrestricted", "Allow")):
+                         ("Notifications: tap", "Allow")):
         tap(step)
         tap(button)
+    if PLAY:
+        # The play build opens Android's battery list, where the owner picks the app: the same result, set directly.
+        adb("shell", "dumpsys", "deviceidle", "whitelist", "+" + PKG)
+    else:
+        tap("Battery: unrestricted")
+        tap("Allow")
+
+
+def clear_notifications():
+    """Clears the emulator's own notices from the shade, so the video shows only the app's."""
+    adb("shell", "cmd", "statusbar", "expand-notifications")
+    time.sleep(1.5)
+    try:
+        tap("Clear all", 5)
+    except SystemExit:
+        pass  # nothing to clear
+    adb("shell", "cmd", "statusbar", "collapse")
+    time.sleep(1)
 
 
 def step_video():
-    rec = subprocess.Popen([ADB, "shell", "screenrecord", "--time-limit", "75", "--bit-rate", "6000000",
-                            "/sdcard/fc-background-location.mp4"])
-    time.sleep(2)
+    # Play asks for 30 seconds or less: the step, the disclosure, Android's screen, Start, the screen off and back on
+    # with newer readings, then the notification with its Stop button (the foreground service's declaration). Each
+    # lookup of the screen takes a second or two, so the ones that can are made before the recording starts.
+    clear_notifications()
     top()
+    step = wait("Location: allow all the time")
+    remote = "/sdcard/fc-background-location.mp4"
+    rec = subprocess.Popen([ADB, "shell", "screenrecord", "--time-limit", "60", "--bit-rate", "6000000", remote])
     time.sleep(1.5)
-    tap("Location: allow all the time")
-    wait("Location in the background")
-    time.sleep(4)  # long enough to read in the video
-    tap("Continue")
-    allow = wait("Allow all the time")
-    time.sleep(1.5)
-    tap_at(allow)
-    time.sleep(1)
+    tap_at(step)
+    cont = wait("Continue")  # the disclosure stays up while this reads the screen, and after: long enough to read
+    time.sleep(2)
+    tap_at(cont)
+    tap_at(wait("Allow all the time"))
     key("BACK")
     tap("Start recording")
-    wait("● Recording", 20)
-    scroll_to("● Recording")
-    time.sleep(4)
+    time.sleep(3)  # the status turns to Recording, with a first reading
     key("POWER")  # the screen goes off; recording goes on
-    time.sleep(20)
+    time.sleep(4)
     key("WAKEUP")
     adb("shell", "wm", "dismiss-keyguard")
-    time.sleep(6)
-    rec.wait(timeout=120)
+    time.sleep(2)  # newer readings in the status
+    adb("shell", "cmd", "statusbar", "expand-notifications")
+    time.sleep(1)
+    n = find("Family Coverage is recording")
+    if n is not None:  # a swipe down on a notification opens it, with its Stop button
+        adb("shell", "input", "swipe", str(n["x"]), str(n["y"]), str(n["x"]), str(n["y"] + 400), "300")
+    time.sleep(2)
+    adb("shell", "cmd", "statusbar", "collapse")
+    adb("shell", "pkill", "-INT", "screenrecord")
+    rec.wait(timeout=30)
+    time.sleep(1)
     OUT.mkdir(parents=True, exist_ok=True)
-    adb("pull", "/sdcard/fc-background-location.mp4", str(OUT / "fc-background-location.mp4"))
+    adb("pull", remote, str(OUT / "fc-background-location.mp4"))
     print("video", OUT / "fc-background-location.mp4")
 
 
@@ -228,15 +269,13 @@ def step_places():
     geo(*HOME)
     time.sleep(3)
     edit_place("School")  # Sam's, with weekday times
-    tap("Alex")
-    tap("Jo")
+    members_for("Sam")
     tap("Times, such as")
     type_text("8:15, 15:20")
     key("BACK")
     tap("Save")
     edit_place("Work")  # Alex's
-    tap("Sam")
-    tap("Jo")
+    members_for("Alex")
     tap("Save")
 
 
@@ -244,7 +283,8 @@ def step_shots():
     top()
     shot("03-recording")
     n = scroll_to("Places")
-    adb("shell", "input", "swipe", "540", str(n["y"]), "540", "260", "600")
+    # The play build's test-texts note names the F-Droid build: Play's shots stop above it.
+    adb("shell", "input", "swipe", "540", str(n["y"]), "540", "600" if PLAY else "260", "600")
     time.sleep(1.2)
     shot("04-places")
     edit_place("School")
@@ -280,6 +320,6 @@ STEPS = {"prep": step_prep, "household": step_household, "permissions": step_per
          "places": step_places, "shots": step_shots, "report": step_report, "reset": step_reset}
 
 if __name__ == "__main__":
-    if len(sys.argv) != 2 or sys.argv[1] not in STEPS:
+    if not 2 <= len(sys.argv) <= 3 or sys.argv[1] not in STEPS or sys.argv[2:] not in ([], ["--play"]):
         sys.exit(__doc__)
     STEPS[sys.argv[1]]()

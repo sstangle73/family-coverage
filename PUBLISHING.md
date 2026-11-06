@@ -23,7 +23,8 @@ For maintainers. Three channels, one codebase:
 - [x] **Screenshots** in `fastlane/metadata/android/en-US/images/` (phone shots, one tablet shot of the report, and
       `featureGraphic.png`), for F-Droid and the Play listing. A made-up household, never real places.
       `tool/store_shots.py` makes them on the emulator, and Play's background-location video too;
-      `store/feature-graphic.html` is the feature graphic's source.
+      `store/feature-graphic.html` is the feature graphic's source. Play gets its own phone shots from the `play`
+      build (`--play`), in `store/play/phoneScreenshots/`, and its description in `store/play/`.
 - [ ] Test on at least one Pixel and one Samsung, dual-SIM, for a week: [TESTING.md](TESTING.md).
 
 ## Each release
